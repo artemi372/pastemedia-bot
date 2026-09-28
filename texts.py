@@ -16,7 +16,7 @@ TEXTS = {
     "en": {
         "start": (
             "👋 Hi! I download short videos:\n"
-            "• <b>TikTok</b> without watermark (slideshows too)\n"
+            "• <b>TikTok</b> without watermark (slideshows as albums)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram Reels</b>\n"
             "\n"
@@ -62,7 +62,7 @@ TEXTS = {
             "• Private chat: just send me a link\n"
             "• Groups: add me and I'll reply to every link with the video\n"
             "\n"
-            "🎞 TikTok photo slideshows become videos with music."
+            "🎞 TikTok slideshows come as photo albums."
         ),
         "group_hello": (
             "👋 Hi! Post TikTok, YouTube Shorts or Instagram Reels links here "
@@ -78,7 +78,7 @@ TEXTS = {
     "ru": {
         "start": (
             "👋 Привет! Я скачиваю короткие видео:\n"
-            "• <b>TikTok</b> без вотермарки (и слайд-шоу тоже)\n"
+            "• <b>TikTok</b> без вотермарки (слайд-шоу — альбомом)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram Reels</b>\n"
             "\n"
@@ -125,7 +125,7 @@ TEXTS = {
             "• В личке: просто пришли мне ссылку\n"
             "• В группе: добавь меня, и я отвечу видео на каждую ссылку\n"
             "\n"
-            "🎞 Фото-слайдшоу из TikTok превращаю в видео с музыкой."
+            "🎞 Слайд-шоу из TikTok присылаю альбомом фотографий."
         ),
         "group_hello": (
             "👋 Привет! Кидайте сюда ссылки на TikTok, YouTube Shorts или "
@@ -142,7 +142,7 @@ TEXTS = {
     "et": {
         "start": (
             "👋 Tere! Laadin alla lühivideoid:\n"
-            "• <b>TikTok</b> ilma vesimärgita (ka slaidiesitlused)\n"
+            "• <b>TikTok</b> ilma vesimärgita (slaidiesitlused albumina)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram Reels</b>\n"
             "\n"
@@ -187,7 +187,7 @@ TEXTS = {
             "• Privaatselt: saada mulle lihtsalt link\n"
             "• Grupis: lisa mind ja vastan igale lingile videoga\n"
             "\n"
-            "🎞 TikToki fotoslaidiesitlustest teen muusikaga video."
+            "🎞 TikToki slaidiesitlused saadan fotoalbumina."
         ),
         "group_hello": (
             "👋 Tere! Saatke siia TikToki, YouTube Shortsi või Instagram "

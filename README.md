@@ -19,7 +19,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 
 | Platform | Links | Status |
 |---|---|---|
-| TikTok | videos, photo slideshows | ✅ stable |
+| TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
 | Instagram | Reels and video posts | ⚠️ often needs cookies from a logged-in account |
 
@@ -32,7 +32,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 3. The video is uploaded to a private "storage" channel to obtain a `file_id`.
 4. The placeholder is edited into the video. Repeated links are served instantly from cache.
 
-TikTok photo slideshows are rendered into a video (images + original music) with ffmpeg, since an inline message can hold only one media item.
+TikTok photo slideshows are sent as photo albums (up to 10 per album, without sound) in private chats and groups. In inline mode they are rendered into a video with the original music, since an inline message can hold only one media item.
 
 ## Setup
 
@@ -56,7 +56,7 @@ python bot.py
 
 To stop the bot, type `stop` in the same terminal (or press Ctrl+C).
 
-When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups is kept in `state.json` (runtime data, keep it out of git). A hard crash or power loss skips the notice.
+When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups and per-user settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice.
 
 ### Cookies (optional, for Instagram / YouTube)
 

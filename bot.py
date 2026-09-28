@@ -18,9 +18,10 @@ Inline flow:
 3. ``edit_message_media`` -- replace the placeholder with the video.
 
 Repeated requests for the same link are served from the ``file_id``
-cache. TikTok photo slideshows are rendered into an mp4 (images +
-original music) with ffmpeg, because an inline message can hold only
-one media item, not an album.
+cache. TikTok photo slideshows are sent as a photo album in private
+chats and groups. In inline mode they are rendered into an mp4
+(images + original music) with ffmpeg, because an inline message can
+hold only one media item, not an album.
 """
 
 import asyncio
@@ -59,6 +60,7 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
+    InputMediaPhoto,
     InputMediaVideo,
     InputTextMessageContent,
     Message,
@@ -77,6 +79,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
+ALBUM_LIMIT = 10  # max photos in one Telegram album
 SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -120,16 +123,20 @@ router = Router()
 
 # ---------- runtime state ----------
 
-# url -> Telegram file_id (in memory; use sqlite/redis in production)
+# url -> Telegram file_id of the video (in memory)
 cache: dict[str, str] = {}
+# url -> Telegram file_ids of slideshow photos (in memory)
+album_cache: dict[str, list[str]] = {}
+# short url -> full url after redirects (in memory)
+resolved: dict[str, str] = {}
 # Prevents downloading the same link twice in parallel.
 locks: dict[str, asyncio.Lock] = {}
-# user_id -> language chosen via /language (in memory)
-user_langs: dict[int, str] = {}
 # Saved to STATE_FILE:
+#   users: str(user_id) -> per-user settings, e.g. {"lang": "et"}
 #   groups: str(chat_id) -> language of the group
 #   restart_notices: str(chat_id) -> message_id of the notice
 state: dict[str, dict[str, Any]] = {
+    "users": {},
     "groups": {},
     "restart_notices": {},
 }
@@ -173,6 +180,17 @@ def remember_group(chat_id: int, lang: str):
         save_state()
 
 
+def user_settings(user_id: int) -> dict[str, Any]:
+    """Return the saved settings of a user (empty if none)."""
+    return state["users"].get(str(user_id), {})
+
+
+def set_user_setting(user_id: int, key: str, value: Any):
+    """Save one setting of a user to the persistent state."""
+    state["users"].setdefault(str(user_id), {})[key] = value
+    save_state()
+
+
 def forget_group(chat_id: int):
     """Remove a group from the persistent list."""
     if state["groups"].pop(str(chat_id), None) is not None:
@@ -190,7 +208,8 @@ def lang_of(user: User | None) -> str:
     """
     if user is None:
         return DEFAULT_LANG
-    return user_langs.get(user.id) or detect_lang(user.language_code)
+    saved = user_settings(user.id).get("lang")
+    return saved if saved in TEXTS else detect_lang(user.language_code)
 
 
 def error_text(lang: str, e: Exception) -> str:
@@ -266,8 +285,15 @@ def _http() -> httpx.Client:
 
 def resolve_url(url: str) -> str:
     """Follow short links (vm.tiktok.com/...) to the full post URL."""
-    with _http() as c:
-        return str(c.get(url).url)
+    if url not in resolved:
+        with _http() as c:
+            resolved[url] = str(c.get(url).url)
+    return resolved[url]
+
+
+def is_slideshow(url: str) -> bool:
+    """Check whether a link points to a TikTok photo slideshow."""
+    return platform_of(url) == "tiktok" and "/photo/" in resolve_url(url)
 
 
 def _page_json(html: str) -> list[dict]:
@@ -349,6 +375,41 @@ def _fetch_slideshow_item(c: httpx.Client, url: str) -> dict:
     raise RuntimeError("couldn't find slideshow data on the page")
 
 
+def _download_images(
+    c: httpx.Client, item: dict, outdir: str, ext: str
+) -> list[str]:
+    """Download the slideshow images and convert them to one format.
+
+    TikTok mixes jpeg and webp, so every image is converted with
+    ffmpeg into the given format (e.g. "jpg" or "png").
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is not installed")
+    paths = []
+    for i, img in enumerate(item["imagePost"]["images"]):
+        urls = img["imageURL"]["urlList"]
+        src = next((u for u in urls if "jpeg" in u or ".jpg" in u), urls[0])
+        raw = os.path.join(outdir, f"{i:03}.raw")
+        with open(raw, "wb") as f:
+            f.write(c.get(src).content)
+        out = os.path.join(outdir, f"{i:03}.{ext}")
+        # -q:v 2 is high JPEG quality; ignored for PNG.
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
+            + ["-q:v", "2", out],
+            check=True,
+        )
+        paths.append(out)
+    return paths
+
+
+def download_slideshow_images(url: str, outdir: str) -> list[str]:
+    """Download a TikTok slideshow as a list of JPEG files."""
+    with _http() as c:
+        item = _fetch_slideshow_item(c, resolve_url(url))
+        return _download_images(c, item, outdir, "jpg")
+
+
 def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
     """Render a TikTok photo slideshow into an mp4 with music.
 
@@ -362,26 +423,8 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
 
     with _http() as c:
         item = _fetch_slideshow_item(c, url)
-        images = item["imagePost"]["images"]
-
-        # Download the images and normalize them to PNG: TikTok mixes
-        # jpeg and webp, and ffmpeg's concat demuxer can't handle
-        # mixed formats in one list.
-        img_paths = []
-        for i, img in enumerate(images):
-            urls = img["imageURL"]["urlList"]
-            src = next(
-                (u for u in urls if "jpeg" in u or ".jpg" in u), urls[0]
-            )
-            raw = os.path.join(outdir, f"{i:03}.raw")
-            with open(raw, "wb") as f:
-                f.write(c.get(src).content)
-            png = os.path.join(outdir, f"{i:03}.png")
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", raw, png],
-                check=True,
-            )
-            img_paths.append(png)
+        # PNG: ffmpeg's concat demuxer can't handle mixed formats.
+        img_paths = _download_images(c, item, outdir, "png")
 
         audio = None
         music_url = (item.get("music") or {}).get("playUrl")
@@ -534,6 +577,58 @@ async def get_file_id(bot: Bot, url: str) -> str:
         return cache[url]
 
 
+def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
+    """Split a list into parts of at most `size` items."""
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+async def get_album_ids(bot: Bot, url: str) -> list[str]:
+    """Return Telegram file_ids for the photos of a slideshow.
+
+    On a cache miss, download the images and upload them to the
+    storage channel first.
+    """
+    if url in album_cache:
+        return album_cache[url]
+    lock = locks.setdefault("album:" + url, asyncio.Lock())
+    async with lock:
+        if url in album_cache:
+            return album_cache[url]
+        file_ids = []
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = await asyncio.to_thread(
+                download_slideshow_images, url, tmp
+            )
+            for part in chunks(paths):
+                media = [InputMediaPhoto(media=FSInputFile(p)) for p in part]
+                sent = await bot.send_media_group(STORAGE_CHAT_ID, media)
+                # The last PhotoSize is the largest one.
+                file_ids += [m.photo[-1].file_id for m in sent if m.photo]
+        if not file_ids:
+            raise RuntimeError("Telegram didn't return the uploaded photos")
+        album_cache[url] = file_ids
+        return file_ids
+
+
+async def reply_with_media(bot: Bot, msg: Message, url: str):
+    """Reply to a message with the media behind a link.
+
+    Slideshows come as photo albums (without sound), everything else
+    as a video.
+    """
+    if await asyncio.to_thread(is_slideshow, url):
+        for part in chunks(await get_album_ids(bot, url)):
+            if len(part) == 1:
+                await msg.reply_photo(part[0])
+            else:
+                await msg.reply_media_group(
+                    [InputMediaPhoto(media=file_id) for file_id in part]
+                )
+        return
+    file_id = await get_file_id(bot, url)
+    await msg.reply_video(file_id, supports_streaming=True)
+
+
 # ---------- handlers: private chat ----------
 
 private = F.chat.type == ChatType.PRIVATE
@@ -572,7 +667,7 @@ async def on_language_chosen(c: CallbackQuery):
     if code not in TEXTS:
         await c.answer()
         return
-    user_langs[c.from_user.id] = code
+    set_user_setting(c.from_user.id, "lang", code)
     # Messages older than 48 hours come as InaccessibleMessage and
     # can't be edited; confirm with a popup instead.
     if isinstance(c.message, Message):
@@ -584,13 +679,12 @@ async def on_language_chosen(c: CallbackQuery):
 
 @router.message(F.text.regexp(LINK_RE, mode="search"), private)
 async def on_link(msg: Message, bot: Bot):
-    """Reply with the video to a link sent directly to the bot."""
+    """Reply with the media to a link sent directly to the bot."""
     lang = lang_of(msg.from_user)
     url = LINK_RE.search(msg.text).group(0)
     status = await msg.reply(t(lang, "downloading"))
     try:
-        file_id = await get_file_id(bot, url)
-        await msg.reply_video(file_id, supports_streaming=True)
+        await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
         await status.edit_text(error_text(lang, e))
@@ -636,7 +730,7 @@ async def track_groups(
     F.via_bot.is_(None),
 )
 async def on_group_link(msg: Message, bot: Bot):
-    """Reply with the video to a link posted in a group.
+    """Reply with the media to a link posted in a group.
 
     No "Downloading..." text here to keep the chat clean: the "sending
     video..." status at the top of the chat shows that the bot works.
@@ -644,8 +738,7 @@ async def on_group_link(msg: Message, bot: Bot):
     url = LINK_RE.search(msg.text).group(0)
     try:
         async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
-            file_id = await get_file_id(bot, url)
-        await msg.reply_video(file_id, supports_streaming=True)
+            await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
         await msg.reply(error_text(lang_of(msg.from_user), e))
