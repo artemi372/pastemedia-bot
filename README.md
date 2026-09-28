@@ -15,7 +15,7 @@ Type in any chat:
 
 pick the result — the bot replaces it with the video.
 
-You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video.
+You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. Error messages delete themselves after 15 seconds to keep chats clean.
 
 | Platform | Links | Status |
 |---|---|---|
@@ -23,7 +23,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
 | Instagram | Reels and video posts | ⚠️ often needs cookies from a logged-in account |
 
-**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
+**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. In groups, admins can set one language for the whole group with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
 
 ## How it works
 
@@ -56,7 +56,9 @@ python bot.py
 
 To stop the bot, type `stop` in the same terminal (or press Ctrl+C).
 
-When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups and per-user settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice.
+The bot shows its status in its Telegram profile: 🟢 Online while running, 🔴 Offline after a normal stop.
+
+When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups, per-user and per-group settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice and the offline status.
 
 ### Cookies (optional, for Instagram / YouTube)
 
