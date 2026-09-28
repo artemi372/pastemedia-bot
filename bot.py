@@ -243,10 +243,11 @@ def _pick_clean_format(info: dict) -> dict:
         )
 
     def score(f):
+        """Rank a format: H.264 first, then height, then bitrate."""
         vcodec = (f.get("vcodec") or "").lower()
         # HEVC doesn't play on some Telegram clients.
         h264 = vcodec.startswith(("h264", "avc"))
-        return (h264, f.get("height") or 0, f.get("tbr") or 0)
+        return h264, f.get("height") or 0, f.get("tbr") or 0
 
     return max(fmts, key=score)
 
@@ -464,6 +465,8 @@ async def get_file_id(bot: Bot, url: str) -> str:
                 # URLs may contain "&", which would break HTML parsing.
                 parse_mode=None,
             )
+        if msg.video is None:
+            raise RuntimeError("Telegram didn't return the uploaded video")
         cache[url] = msg.video.file_id
         return cache[url]
 
@@ -502,13 +505,18 @@ async def on_language(msg: Message):
 @router.callback_query(F.data.startswith("lang:"))
 async def on_language_chosen(c: CallbackQuery):
     """Save the chosen language and confirm it."""
-    code = c.data.split(":", 1)[1]
+    code = (c.data or "").split(":", 1)[-1]
     if code not in TEXTS:
         await c.answer()
         return
     user_langs[c.from_user.id] = code
-    await c.message.edit_text(t(code, "lang_set"))
-    await c.answer()
+    # Messages older than 48 hours come as InaccessibleMessage and
+    # can't be edited; confirm with a popup instead.
+    if isinstance(c.message, Message):
+        await c.message.edit_text(t(code, "lang_set"))
+        await c.answer()
+    else:
+        await c.answer(t(code, "lang_set"))
 
 
 @router.message(F.text.regexp(LINK_RE, mode="search"), private)
@@ -757,6 +765,7 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
     """
 
     def worker():
+        """Wait for commands until "stop" or the end of input."""
         while True:
             try:
                 cmd = input().strip().lower()
