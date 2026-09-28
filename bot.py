@@ -10,14 +10,21 @@ Flow:
                             upload it to a private storage channel to obtain a file_id
 3. edit_message_media    -> replace the placeholder with the video
 Repeated requests for the same link are served instantly from the file_id cache.
+
+Photo slideshows are rendered into an mp4 (images + original music) with ffmpeg,
+because an inline message can hold only one media item, not an album.
 """
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 
+import httpx
 import yt_dlp
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router
@@ -38,6 +45,11 @@ load_dotenv()
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])  # private channel where the bot is an admin, id like -100...
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
+SLIDE_SECONDS = 2.5           # how long each slideshow image is shown
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+)
 
 TT_RE = re.compile(r"https?://(?:[\w-]+\.)?tiktok\.com/\S+", re.I)
 
@@ -74,8 +86,92 @@ def _pick_clean_format(info: dict) -> dict:
     return max(fmts, key=score)
 
 
+def _http() -> httpx.Client:
+    return httpx.Client(
+        headers={"User-Agent": UA, "Referer": "https://www.tiktok.com/"},
+        follow_redirects=True,
+        timeout=20,
+    )
+
+
+def resolve_url(url: str) -> str:
+    """Follow short links (vm.tiktok.com/...) to the full post URL."""
+    with _http() as c:
+        return str(c.get(url).url)
+
+
+def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
+    """Download slideshow images + music and render them into an mp4 with ffmpeg."""
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is not installed, slideshows can't be rendered")
+
+    with _http() as c:
+        html = c.get(url).text
+        m = re.search(
+            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html, re.S
+        )
+        if not m:
+            raise RuntimeError("couldn't find post data on the page")
+        data = json.loads(m.group(1))
+        try:
+            item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+            images = item["imagePost"]["images"]
+        except (KeyError, TypeError):
+            raise RuntimeError("unexpected page structure (TikTok changed something)")
+
+        # Download images and normalize them to PNG: TikTok mixes jpeg/webp,
+        # and ffmpeg's concat demuxer can't handle mixed formats in one list.
+        img_paths = []
+        for i, img in enumerate(images):
+            urls = img["imageURL"]["urlList"]
+            src = next((u for u in urls if "jpeg" in u or ".jpg" in u), urls[0])
+            raw = os.path.join(outdir, f"{i:03}.raw")
+            with open(raw, "wb") as f:
+                f.write(c.get(src).content)
+            png = os.path.join(outdir, f"{i:03}.png")
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", raw, png], check=True)
+            img_paths.append(png)
+
+        audio = None
+        music_url = (item.get("music") or {}).get("playUrl")
+        if music_url:
+            audio = os.path.join(outdir, "audio.mp3")
+            with open(audio, "wb") as f:
+                f.write(c.get(music_url).content)
+
+    # ffmpeg concat list: each image shown SLIDE_SECONDS; last one repeated (concat quirk)
+    list_path = os.path.join(outdir, "list.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for p in img_paths:
+            f.write(f"file '{p}'\nduration {SLIDE_SECONDS}\n")
+        f.write(f"file '{img_paths[-1]}'\n")
+
+    out = os.path.join(outdir, "slideshow.mp4")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list_path]
+    if audio:
+        cmd += ["-stream_loop", "-1", "-i", audio]  # loop music if slides are longer
+    cmd += [
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
+               "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+    ]
+    if audio:
+        cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
+    cmd += ["-movflags", "+faststart", out]
+    subprocess.run(cmd, check=True)
+
+    if os.path.getsize(out) > MAX_BYTES:
+        raise RuntimeError("rendered slideshow is larger than 50 MB")
+    duration = len(img_paths) * SLIDE_SECONDS
+    return out, {"width": 1080, "height": 1920, "duration": duration}
+
+
 def download(url: str, outdir: str) -> tuple[str, dict]:
-    """Download a TikTok video into outdir. Returns (file path, yt-dlp info dict)."""
+    """Download a TikTok video (or render a slideshow) into outdir. Returns (file path, info dict)."""
+    full_url = resolve_url(url)
+    if "/photo/" in full_url:
+        return make_slideshow(full_url, outdir)
+
     base = {"quiet": True, "noplaylist": True, "no_warnings": True}
     with yt_dlp.YoutubeDL(base) as ydl:
         info = ydl.extract_info(url, download=False)
