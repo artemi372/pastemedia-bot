@@ -1,19 +1,28 @@
+"""Telegram bot that downloads short videos.
+
+Supported: TikTok (without watermark), YouTube Shorts and Instagram
+Reels. The bot works inline in any chat, in private chats and in
+groups.
+
+Usage in any chat::
+
+    @your_bot https://vm.tiktok.com/xxxx
+
+Inline flow:
+
+1. ``inline_query`` -- instantly return a placeholder with an inline
+   keyboard (without a keyboard Telegram won't provide
+   ``inline_message_id``).
+2. ``chosen_inline_result`` -- download the video with yt-dlp and
+   upload it to a private storage channel to obtain a ``file_id``.
+3. ``edit_message_media`` -- replace the placeholder with the video.
+
+Repeated requests for the same link are served from the ``file_id``
+cache. TikTok photo slideshows are rendered into an mp4 (images +
+original music) with ffmpeg, because an inline message can hold only
+one media item, not an album.
 """
-Inline Telegram bot that downloads TikTok videos without watermark.
 
-Usage in any chat:  @your_bot https://vm.tiktok.com/xxxx
-
-Flow:
-1. inline_query          -> instantly return a placeholder with an inline keyboard
-                            (without a keyboard Telegram won't provide inline_message_id)
-2. chosen_inline_result  -> download the video via yt-dlp (non-watermarked format),
-                            upload it to a private storage channel to obtain a file_id
-3. edit_message_media    -> replace the placeholder with the video
-Repeated requests for the same link are served instantly from the file_id cache.
-
-Photo slideshows are rendered into an mp4 (images + original music) with ffmpeg,
-because an inline message can hold only one media item, not an album.
-"""
 import asyncio
 import hashlib
 import json
@@ -24,18 +33,25 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from typing import Any, Awaitable, Callable
 
 import httpx
 import yt_dlp
-from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
-from aiogram.filters import JOIN_TRANSITION, ChatMemberUpdatedFilter, Command, CommandStart
-from aiogram.utils.chat_action import ChatActionSender
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import (
+    JOIN_TRANSITION,
+    LEAVE_TRANSITION,
+    ChatMemberUpdatedFilter,
+    Command,
+    CommandStart,
+)
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
+    ChatMemberUpdated,
     ChosenInlineResult,
     FSInputFile,
     InlineKeyboardButton,
@@ -45,80 +61,203 @@ from aiogram.types import (
     InlineQueryResultCachedVideo,
     InputMediaVideo,
     InputTextMessageContent,
-    ChatMemberUpdated,
     Message,
     User,
 )
+from aiogram.utils.chat_action import ChatActionSender
+from dotenv import load_dotenv
 
 from texts import DEFAULT_LANG, LANG_NAMES, TEXTS, detect_lang, t
 
+# ---------- configuration ----------
+
 load_dotenv()
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])  # private channel where the bot is an admin, id like -100...
+# Private channel where the bot is an admin, id like -100...
+STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
+
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
-SLIDE_SECONDS = 2.5           # how long each slideshow image is shown
-UA = (
+SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
+USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 )
 
-TT_RE = re.compile(r"https?://(?:[\w-]+\.)?tiktok\.com/\S+", re.I)
+PLATFORM_PATTERNS = {
+    "tiktok": r"https?://(?:[\w-]+\.)?tiktok\.com/\S+",
+    # Only Shorts: regular YouTube videos rarely fit into 50 MB.
+    "youtube": r"https?://(?:www\.|m\.)?youtube\.com/shorts/[\w-]+\S*",
+    # Reels and video posts. Links may include the username:
+    # instagram.com/<user>/reel/<id>
+    "instagram": (
+        r"https?://(?:www\.)?instagram\.com/"
+        r"(?:[\w.]+/)?(?:reels?|p)/[\w-]+\S*"
+    ),
+}
+LINK_RE = re.compile(
+    "|".join(f"(?:{p})" for p in PLATFORM_PATTERNS.values()), re.I
+)
+
+# Optional cookies (Netscape cookies.txt format) for platforms that
+# block anonymous access. Keep this folder out of git: cookies are as
+# secret as a password.
+COOKIES_DIR = "cookies"
+
+# Persistent state that survives restarts. Keep it out of git: it is
+# runtime data, not code.
+STATE_FILE = "state.json"
+
+ALLOWED_UPDATES = [
+    "message",
+    "inline_query",
+    "chosen_inline_result",
+    "callback_query",
+    "my_chat_member",
+]
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
 
-cache: dict[str, str] = {}              # url -> file_id (use sqlite/redis in production)
-locks: dict[str, asyncio.Lock] = {}     # prevents downloading the same link twice in parallel
+# ---------- runtime state ----------
 
-
-user_langs: dict[int, str] = {}         # user_id -> language chosen via /language (in memory)
+# url -> Telegram file_id (in memory; use sqlite/redis in production)
+cache: dict[str, str] = {}
+# Prevents downloading the same link twice in parallel.
+locks: dict[str, asyncio.Lock] = {}
+# user_id -> language chosen via /language (in memory)
+user_langs: dict[int, str] = {}
+# Saved to STATE_FILE:
+#   groups: str(chat_id) -> language of the group
+#   restart_notices: str(chat_id) -> message_id of the notice
+state: dict[str, dict[str, Any]] = {
+    "groups": {},
+    "restart_notices": {},
+}
 
 
 class TooBigError(RuntimeError):
     """The file exceeds the Bot API upload limit."""
 
 
+def load_state():
+    """Load the persistent state from STATE_FILE, if it exists."""
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        for key in state:
+            state[key] = data.get(key, {})
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logging.exception(
+            "couldn't read %s, starting with empty state", STATE_FILE
+        )
+
+
+def save_state():
+    """Save the persistent state to STATE_FILE atomically.
+
+    The data is written to a temporary file first and then moved into
+    place, so a crash in the middle never leaves a broken file.
+    """
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_FILE)
+
+
+def remember_group(chat_id: int, lang: str):
+    """Add a group to the persistent list, if it isn't there yet."""
+    if str(chat_id) not in state["groups"]:
+        state["groups"][str(chat_id)] = lang
+        save_state()
+
+
+def forget_group(chat_id: int):
+    """Remove a group from the persistent list."""
+    if state["groups"].pop(str(chat_id), None) is not None:
+        save_state()
+
+
+# ---------- helpers ----------
+
+
 def lang_of(user: User | None) -> str:
-    """Language for a user: manual choice from /language, otherwise their Telegram app language."""
+    """Return the language to talk to a user in.
+
+    A manual choice from /language wins; otherwise the language of the
+    user's Telegram app is used.
+    """
     if user is None:
         return DEFAULT_LANG
     return user_langs.get(user.id) or detect_lang(user.language_code)
 
 
 def error_text(lang: str, e: Exception) -> str:
-    """Turn an exception into a friendly message. Details go to the log, not to the user."""
+    """Turn an exception into a friendly message for the user.
+
+    Technical details go to the log, not to the chat.
+    """
     return t(lang, "too_big" if isinstance(e, TooBigError) else "failed")
 
 
-def rid(url: str) -> str:
-    """Build a short stable inline result id from a URL (Telegram limit: 64 bytes)."""
+def platform_of(url: str) -> str:
+    """Return the platform of a link: tiktok, youtube or instagram."""
+    for name, pattern in PLATFORM_PATTERNS.items():
+        if re.match(pattern, url, re.I):
+            return name
+    raise ValueError(f"unsupported link: {url}")
+
+
+def cookies_for(platform: str) -> str | None:
+    """Return the path to cookies/<platform>.txt, if it exists."""
+    path = os.path.join(COOKIES_DIR, f"{platform}.txt")
+    return path if os.path.isfile(path) else None
+
+
+def result_id(url: str) -> str:
+    """Build a short stable inline result id from a URL.
+
+    Telegram limits inline result ids to 64 bytes.
+    """
     return hashlib.sha1(url.encode()).hexdigest()[:32]
 
 
 # ---------- downloading ----------
 
+
 def _pick_clean_format(info: dict) -> dict:
-    """Pick the best non-watermarked video format, preferring H.264."""
+    """Pick the best non-watermarked TikTok format, preferring H.264."""
     fmts = [
-        f for f in info.get("formats", [])
+        f
+        for f in info.get("formats", [])
         if f.get("vcodec") != "none"
         and "watermark" not in (f.get("format_note") or "").lower()
-        and f.get("format_id") != "download"   # TikTok's "download" format is the watermarked one
+        # TikTok's "download" format is the watermarked one.
+        and f.get("format_id") != "download"
     ]
     if not fmts:
-        raise RuntimeError("no clean format found (photo post, or TikTok changed something again)")
+        raise RuntimeError(
+            "no clean format found (photo post, or TikTok changed "
+            "something again)"
+        )
 
     def score(f):
-        vc = (f.get("vcodec") or "").lower()
-        h264 = vc.startswith(("h264", "avc"))  # HEVC doesn't play on some Telegram clients
+        vcodec = (f.get("vcodec") or "").lower()
+        # HEVC doesn't play on some Telegram clients.
+        h264 = vcodec.startswith(("h264", "avc"))
         return (h264, f.get("height") or 0, f.get("tbr") or 0)
 
     return max(fmts, key=score)
 
 
 def _http() -> httpx.Client:
+    """Create an HTTP client that looks like a regular browser."""
     return httpx.Client(
-        headers={"User-Agent": UA, "Referer": "https://www.tiktok.com/"},
+        headers={
+            "User-Agent": USER_AGENT,
+            "Referer": "https://www.tiktok.com/",
+        },
         follow_redirects=True,
         timeout=20,
     )
@@ -131,35 +270,53 @@ def resolve_url(url: str) -> str:
 
 
 def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
-    """Download slideshow images + music and render them into an mp4 with ffmpeg."""
+    """Render a TikTok photo slideshow into an mp4 with music.
+
+    Return the path to the video and a dict with its width, height
+    and duration.
+    """
     if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed, slideshows can't be rendered")
+        raise RuntimeError(
+            "ffmpeg is not installed, slideshows can't be rendered"
+        )
 
     with _http() as c:
         html = c.get(url).text
         m = re.search(
-            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html, re.S
+            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>'
+            r"(.*?)</script>",
+            html,
+            re.S,
         )
         if not m:
             raise RuntimeError("couldn't find post data on the page")
         data = json.loads(m.group(1))
         try:
-            item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+            scope = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]
+            item = scope["itemInfo"]["itemStruct"]
             images = item["imagePost"]["images"]
-        except (KeyError, TypeError):
-            raise RuntimeError("unexpected page structure (TikTok changed something)")
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(
+                "unexpected page structure (TikTok changed something)"
+            ) from e
 
-        # Download images and normalize them to PNG: TikTok mixes jpeg/webp,
-        # and ffmpeg's concat demuxer can't handle mixed formats in one list.
+        # Download the images and normalize them to PNG: TikTok mixes
+        # jpeg and webp, and ffmpeg's concat demuxer can't handle
+        # mixed formats in one list.
         img_paths = []
         for i, img in enumerate(images):
             urls = img["imageURL"]["urlList"]
-            src = next((u for u in urls if "jpeg" in u or ".jpg" in u), urls[0])
+            src = next(
+                (u for u in urls if "jpeg" in u or ".jpg" in u), urls[0]
+            )
             raw = os.path.join(outdir, f"{i:03}.raw")
             with open(raw, "wb") as f:
                 f.write(c.get(src).content)
             png = os.path.join(outdir, f"{i:03}.png")
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", raw, png], check=True)
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", raw, png],
+                check=True,
+            )
             img_paths.append(png)
 
         audio = None
@@ -169,7 +326,8 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
             with open(audio, "wb") as f:
                 f.write(c.get(music_url).content)
 
-    # ffmpeg concat list: each image shown SLIDE_SECONDS; last one repeated (concat quirk)
+    # ffmpeg concat list: each image is shown SLIDE_SECONDS. The last
+    # one is listed twice, otherwise concat ignores its duration.
     list_path = os.path.join(outdir, "list.txt")
     with open(list_path, "w", encoding="utf-8") as f:
         for p in img_paths:
@@ -177,14 +335,18 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
         f.write(f"file '{img_paths[-1]}'\n")
 
     out = os.path.join(outdir, "slideshow.mp4")
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list_path]
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+    cmd += ["-f", "concat", "-safe", "0", "-i", list_path]
     if audio:
-        cmd += ["-stream_loop", "-1", "-i", audio]  # loop music if slides are longer
+        # Loop the music if the slides are longer than the track.
+        cmd += ["-stream_loop", "-1", "-i", audio]
     cmd += [
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
-               "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p",
+        "-vf",
+        "scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "fps=30,format=yuv420p",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-    ]
+    ]  # fmt: skip
     if audio:
         cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
     cmd += ["-movflags", "+faststart", out]
@@ -197,7 +359,62 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
 
 
 def download(url: str, outdir: str) -> tuple[str, dict]:
-    """Download a TikTok video (or render a slideshow) into outdir. Returns (file path, info dict)."""
+    """Download a video from any supported platform into outdir.
+
+    Return the path to the file and the info dict with its metadata.
+    """
+    platform = platform_of(url)
+    if platform == "tiktok":
+        return download_tiktok(url, outdir)
+    return download_generic(url, outdir, platform)
+
+
+def generic_opts(outdir: str, platform: str) -> dict:
+    """Return yt-dlp options for YouTube Shorts and Instagram Reels."""
+    opts = {
+        "quiet": True,
+        "noplaylist": True,
+        "no_warnings": True,
+        "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
+        "format": "bv*+ba/b",
+        # Prefer H.264 + AAC: HEVC, AV1 and VP9 don't play on some
+        # Telegram clients.
+        "format_sort": ["vcodec:h264", "res:1080", "acodec:aac"],
+        "merge_output_format": "mp4",
+        # yt-dlp skips files that are known to be too big.
+        "max_filesize": MAX_BYTES,
+    }
+    cookiefile = cookies_for(platform)
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    return opts
+
+
+def download_generic(url: str, outdir: str, platform: str) -> tuple[str, dict]:
+    """Download a YouTube Short or an Instagram Reel.
+
+    Take the best H.264 mp4 up to 1080p, merged with the audio track.
+    """
+    with yt_dlp.YoutubeDL(generic_opts(outdir, platform)) as ydl:
+        info = ydl.extract_info(url, download=True)
+        downloads = info.get("requested_downloads") or [{}]
+        path = downloads[0].get("filepath") or ydl.prepare_filename(info)
+
+    # The file is missing if yt-dlp skipped it because of max_filesize.
+    if not os.path.isfile(path):
+        raise TooBigError("video is larger than 50 MB")
+    if os.path.getsize(path) > MAX_BYTES:
+        raise TooBigError(
+            "video is larger than 50 MB, Bot API can't upload it"
+        )
+    return path, info
+
+
+def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
+    """Download a TikTok video without watermark.
+
+    Photo slideshows are rendered into a video instead.
+    """
     full_url = resolve_url(url)
     if "/photo/" in full_url:
         return make_slideshow(full_url, outdir)
@@ -216,12 +433,18 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
         path = ydl.prepare_filename(info)
 
     if os.path.getsize(path) > MAX_BYTES:
-        raise TooBigError("video is larger than 50 MB, Bot API can't upload it")
+        raise TooBigError(
+            "video is larger than 50 MB, Bot API can't upload it"
+        )
     return path, info
 
 
 async def get_file_id(bot: Bot, url: str) -> str:
-    """Return a Telegram file_id for the video, downloading and uploading it if not cached."""
+    """Return a Telegram file_id for the video behind a link.
+
+    On a cache miss, download the video and upload it to the storage
+    channel first.
+    """
     if url in cache:
         return cache[url]
     lock = locks.setdefault(url, asyncio.Lock())
@@ -238,7 +461,8 @@ async def get_file_id(bot: Bot, url: str) -> str:
                 duration=int(info.get("duration") or 0) or None,
                 supports_streaming=True,
                 caption=url,
-                parse_mode=None,  # URLs may contain "&", which would break HTML parsing
+                # URLs may contain "&", which would break HTML parsing.
+                parse_mode=None,
             )
         cache[url] = msg.video.file_id
         return cache[url]
@@ -254,21 +478,24 @@ async def on_start(msg: Message, bot: Bot):
     """Greet the user and explain how to use the bot."""
     lang = lang_of(msg.from_user)
     me = await bot.me()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        # Opens the chat picker with "@bot " already typed in
-        InlineKeyboardButton(text=t(lang, "try_button"), switch_inline_query=""),
-    ]])
+    # The button opens the chat picker with "@bot " already typed in.
+    try_button = InlineKeyboardButton(
+        text=t(lang, "try_button"), switch_inline_query=""
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[try_button]])
     await msg.answer(t(lang, "start", bot=me.username), reply_markup=kb)
 
 
 @router.message(Command("language"), private)
 async def on_language(msg: Message):
-    """Show language picker buttons."""
+    """Show the language picker."""
     lang = lang_of(msg.from_user)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=name, callback_data=f"lang:{code}")]
-        for code, name in LANG_NAMES.items()
-    ])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"lang:{code}")]
+            for code, name in LANG_NAMES.items()
+        ]
+    )
     await msg.answer(t(lang, "choose_lang"), reply_markup=kb)
 
 
@@ -284,11 +511,11 @@ async def on_language_chosen(c: CallbackQuery):
     await c.answer()
 
 
-@router.message(F.text.regexp(TT_RE, mode="search"), private)
+@router.message(F.text.regexp(LINK_RE, mode="search"), private)
 async def on_link(msg: Message, bot: Bot):
-    """A TikTok link sent directly to the bot: download and reply with the video."""
+    """Reply with the video to a link sent directly to the bot."""
     lang = lang_of(msg.from_user)
-    url = TT_RE.search(msg.text).group(0)
+    url = LINK_RE.search(msg.text).group(0)
     status = await msg.reply(t(lang, "downloading"))
     try:
         file_id = await get_file_id(bot, url)
@@ -297,15 +524,16 @@ async def on_link(msg: Message, bot: Bot):
         logging.exception("download failed: %s", url)
         await status.edit_text(error_text(lang, e))
         return
+    # The video is already sent, so failing to clean up isn't an error.
     try:
-        await status.delete()  # the video is already sent; failing to clean up isn't an error
+        await status.delete()
     except Exception:
         logging.warning("couldn't delete status message")
 
 
 @router.message(private)
 async def on_other(msg: Message):
-    """Anything else in private chat: hint that a link is expected."""
+    """Hint that a link is expected in private chat."""
     await msg.answer(t(lang_of(msg.from_user), "no_link"))
 
 
@@ -314,18 +542,35 @@ async def on_other(msg: Message):
 group = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
 
 
+@router.message.outer_middleware()
+async def track_groups(
+    handler: Callable[[Message, dict], Awaitable[Any]],
+    msg: Message,
+    data: dict,
+) -> Any:
+    """Remember every group the bot sees messages from.
+
+    This also covers groups the bot joined before group tracking
+    existed.
+    """
+    if msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        remember_group(msg.chat.id, lang_of(msg.from_user))
+    return await handler(msg, data)
+
+
 @router.message(
-    F.text.regexp(TT_RE, mode="search"),
+    F.text.regexp(LINK_RE, mode="search"),
     group,
-    F.via_bot.is_(None),  # ignore messages sent through inline mode (they're already handled)
+    # Messages sent through inline mode are already handled.
+    F.via_bot.is_(None),
 )
 async def on_group_link(msg: Message, bot: Bot):
-    """A TikTok link posted in a group: reply to that message with the video.
+    """Reply with the video to a link posted in a group.
 
-    No "Downloading…" text here to keep the chat clean; the "sending video…" status
-    at the top of the chat shows that the bot is working.
+    No "Downloading..." text here to keep the chat clean: the "sending
+    video..." status at the top of the chat shows that the bot works.
     """
-    url = TT_RE.search(msg.text).group(0)
+    url = LINK_RE.search(msg.text).group(0)
     try:
         async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
             file_id = await get_file_id(bot, url)
@@ -340,9 +585,15 @@ async def on_group_link(msg: Message, bot: Bot):
     ChatMemberUpdatedFilter(member_status_changed=JOIN_TRANSITION),
 )
 async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
-    """Say hi when added to a group, and warn if the bot can't see regular messages."""
+    """Say hi when added to a group.
+
+    Also warn if the bot can't see regular messages there.
+    """
     lang = lang_of(event.from_user)  # the person who added the bot
-    me = await bot.get_me()  # fresh, not cached: privacy mode may have been changed while running
+    remember_group(event.chat.id, lang)
+    # Fresh data, not bot.me(): privacy mode may have been changed
+    # while the bot was running.
+    me = await bot.get_me()
     is_admin = event.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR
     text = t(lang, "group_hello")
     if not me.can_read_all_group_messages and not is_admin:
@@ -350,52 +601,64 @@ async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
     await bot.send_message(event.chat.id, text)
 
 
+@router.my_chat_member(
+    group,
+    ChatMemberUpdatedFilter(member_status_changed=LEAVE_TRANSITION),
+)
+async def on_removed_from_group(event: ChatMemberUpdated):
+    """Stop sending restart notices to a group the bot has left."""
+    forget_group(event.chat.id)
+
+
 # ---------- handlers: inline mode ----------
+
 
 @router.inline_query()
 async def on_inline(q: InlineQuery):
-    """Answer an inline query: cached video if available, otherwise a placeholder."""
+    """Answer an inline query with the video or a placeholder.
+
+    A cached video is sent right away; otherwise a placeholder is
+    returned and replaced once the user sends it.
+    """
     lang = lang_of(q.from_user)
-    m = TT_RE.search(q.query)
+    m = LINK_RE.search(q.query)
     if not m:
         await q.answer([], cache_time=1, is_personal=True)
         return
     url = m.group(0)
 
-    if url in cache:  # already downloaded, send the video right away
-        await q.answer(
-            [InlineQueryResultCachedVideo(
-                id="c" + rid(url), video_file_id=cache[url], title=t(lang, "cached_title"),
-            )],
-            cache_time=1,
-            is_personal=True,
+    if url in cache:
+        cached = InlineQueryResultCachedVideo(
+            id="c" + result_id(url),
+            video_file_id=cache[url],
+            title=t(lang, "cached_title"),
         )
+        await q.answer([cached], cache_time=1, is_personal=True)
         return
 
-    await q.answer(
-        [
-            InlineQueryResultArticle(
-                id=rid(url),
-                title=t(lang, "inline_title"),
-                description=url,
-                input_message_content=InputTextMessageContent(message_text=t(lang, "downloading")),
-                # The keyboard is REQUIRED, otherwise chosen_inline_result has no inline_message_id
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text=t(lang, "loading_button"), callback_data="noop")]]
-                ),
-            )
-        ],
-        cache_time=1,
-        is_personal=True,
+    loading_button = InlineKeyboardButton(
+        text=t(lang, "loading_button"), callback_data="noop"
     )
+    placeholder = InlineQueryResultArticle(
+        id=result_id(url),
+        title=t(lang, "inline_title"),
+        description=url,
+        input_message_content=InputTextMessageContent(
+            message_text=t(lang, "downloading")
+        ),
+        # The keyboard is required: without it chosen_inline_result
+        # has no inline_message_id.
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[loading_button]]),
+    )
+    await q.answer([placeholder], cache_time=1, is_personal=True)
 
 
 @router.chosen_inline_result()
 async def on_chosen(r: ChosenInlineResult, bot: Bot):
-    """Once the placeholder is sent, download the video and swap it in."""
+    """Swap the placeholder for the video once it is sent."""
     if not r.inline_message_id or r.result_id.startswith("c"):
         return
-    m = TT_RE.search(r.query)
+    m = LINK_RE.search(r.query)
     if not m:
         return
     lang = lang_of(r.from_user)
@@ -407,37 +670,99 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
         )
     except Exception as e:
         logging.exception("download failed: %s", m.group(0))
-        await bot.edit_message_text(inline_message_id=r.inline_message_id, text=error_text(lang, e))
+        await bot.edit_message_text(
+            inline_message_id=r.inline_message_id, text=error_text(lang, e)
+        )
 
 
 @router.callback_query(F.data == "noop")
-async def noop(c: CallbackQuery):
+async def on_placeholder_tap(c: CallbackQuery):
     """Handle taps on the placeholder button."""
     await c.answer(t(lang_of(c.from_user), "hang_on"))
 
 
-async def set_commands(bot: Bot):
-    """Register the command menu in every supported language (Telegram picks by app language)."""
+# ---------- startup and shutdown ----------
+
+
+async def post_restart_notices(bot: Bot):
+    """Tell every group that the bot is restarting.
+
+    The message ids are saved so the next run can delete them.
+    """
+    for chat_id, lang in list(state["groups"].items()):
+        try:
+            msg = await bot.send_message(int(chat_id), t(lang, "restarting"))
+            state["restart_notices"][chat_id] = msg.message_id
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            # Kicked, group deleted, or no right to write: no point
+            # in trying again.
+            logging.warning("dropping group %s: %s", chat_id, e)
+            state["groups"].pop(chat_id, None)
+        except Exception:
+            logging.exception("couldn't post restart notice to %s", chat_id)
+        # Stay well under Telegram's rate limits.
+        await asyncio.sleep(0.05)
+    save_state()
+
+
+async def delete_restart_notices(bot: Bot):
+    """Delete the "restarting" messages left by the previous run."""
+    for chat_id, message_id in list(state["restart_notices"].items()):
+        try:
+            await bot.delete_message(int(chat_id), message_id)
+        except Exception as e:
+            logging.warning(
+                "couldn't delete restart notice in %s: %s", chat_id, e
+            )
+    state["restart_notices"] = {}
+    save_state()
+
+
+async def setup_bot_profile(bot: Bot):
+    """Set the command menu and profile texts in every language.
+
+    Telegram shows the version matching the user's app language. The
+    default language is registered without language_code, as a
+    fallback for everyone else.
+    """
+    me = await bot.me()
     for code in TEXTS:
+        lang_code = None if code == DEFAULT_LANG else code
         commands = [
             BotCommand(command="start", description=t(code, "cmd_start")),
-            BotCommand(command="language", description=t(code, "cmd_language")),
+            BotCommand(
+                command="language", description=t(code, "cmd_language")
+            ),
         ]
-        # The default language is also registered without language_code, as a fallback for everyone else
-        await bot.set_my_commands(commands, language_code=None if code == DEFAULT_LANG else code)
+        await bot.set_my_commands(commands, language_code=lang_code)
+        # Shown in an empty chat before the user presses Start
+        # (max 512 characters).
+        await bot.set_my_description(
+            t(code, "bot_description", bot=me.username),
+            language_code=lang_code,
+        )
+        # Shown in the bot's profile and in share links
+        # (max 120 characters).
+        await bot.set_my_short_description(
+            t(code, "bot_short_description"), language_code=lang_code
+        )
 
 
 def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
-    """Read commands from the terminal in a daemon thread. Type 'stop' to shut the bot down.
+    """Read commands from the terminal in a background thread.
 
-    A daemon thread is used so a blocked input() never keeps the process alive after Ctrl+C.
+    Typing "stop" shuts the bot down gracefully. A daemon thread is
+    used so that a blocked input() never keeps the process alive after
+    Ctrl+C.
     """
+
     def worker():
         while True:
             try:
                 cmd = input().strip().lower()
             except (EOFError, KeyboardInterrupt):
-                return  # no interactive terminal (e.g. running as a service) — just ignore
+                # No interactive terminal (e.g. running as a service).
+                return
             if cmd in ("stop", "exit", "quit"):
                 logging.info("stopping bot...")
                 asyncio.run_coroutine_threadsafe(dp.stop_polling(), loop)
@@ -449,17 +774,21 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
 
 
 async def main():
-    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    """Start the bot and run it until it is stopped."""
+    bot = Bot(
+        BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     dp.include_router(router)
+    load_state()
+    dp.startup.register(delete_restart_notices)
+    # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
+    dp.shutdown.register(post_restart_notices)
     print("Bot is running. Type 'stop' to shut it down.")
     start_console(dp, asyncio.get_running_loop())
     try:
-        await set_commands(bot)
-        await dp.start_polling(
-            bot,
-            allowed_updates=["message", "inline_query", "chosen_inline_result", "callback_query", "my_chat_member"],
-        )
+        await setup_bot_profile(bot)
+        await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     finally:
         await bot.session.close()
         logging.info("bot stopped")

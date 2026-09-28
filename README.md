@@ -1,6 +1,6 @@
 # pastetiktokvideo
 
-Inline Telegram bot that downloads TikTok videos without watermark.
+Telegram bot that downloads short videos: **TikTok** without watermark, **YouTube Shorts** and **Instagram Reels**.
 
 > [!WARNING]
 > **This project is vibe-coded.** It was written with heavy help from AI and hasn't been
@@ -13,20 +13,26 @@ Type in any chat:
 @your_bot https://vm.tiktok.com/xxxxxx
 ```
 
-pick the result — the bot replaces it with the clean video.
+pick the result — the bot replaces it with the video.
 
-You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a TikTok link with the video.
+You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video.
+
+| Platform | Links | Status |
+|---|---|---|
+| TikTok | videos, photo slideshows | ✅ stable |
+| YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
+| Instagram | Reels and video posts | ⚠️ often needs cookies from a logged-in account |
 
 **Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
 
 ## How it works
 
 1. Inline query → the bot instantly returns a placeholder.
-2. When the placeholder is sent, the bot downloads the video with [yt-dlp](https://github.com/yt-dlp/yt-dlp), picking a non-watermarked format (H.264 preferred).
+2. When the placeholder is sent, the bot downloads the video with [yt-dlp](https://github.com/yt-dlp/yt-dlp): a non-watermarked format for TikTok, the best H.264 + AAC up to 1080p for YouTube and Instagram (other codecs don't play on some Telegram clients).
 3. The video is uploaded to a private "storage" channel to obtain a `file_id`.
 4. The placeholder is edited into the video. Repeated links are served instantly from cache.
 
-Photo slideshows are rendered into a video (images + original music) with ffmpeg, since an inline message can hold only one media item.
+TikTok photo slideshows are rendered into a video (images + original music) with ffmpeg, since an inline message can hold only one media item.
 
 ## Setup
 
@@ -35,7 +41,9 @@ Photo slideshows are rendered into a video (images + original music) with ffmpeg
 3. `/setinlinefeedback` — set to **Enabled** (required, otherwise the placeholder never turns into a video).
 4. Create a private channel, add the bot as an admin, get its id (`-100...`).
    - *(For groups)* `/setprivacy` → **Disable**, so the bot can see regular messages with links. Then remove and re-add the bot to existing groups, the change only applies after that. Alternatively, make the bot an admin in the group.
-5. Install [ffmpeg](https://ffmpeg.org/) (needed for slideshows): `winget install ffmpeg` on Windows, `apt install ffmpeg` on Debian/Ubuntu.
+5. Install [ffmpeg](https://ffmpeg.org/) (slideshows, merging YouTube video + audio) and [Deno](https://deno.com/) (required by yt-dlp for YouTube):
+   - Windows: `winget install ffmpeg` and `winget install DenoLand.Deno`
+   - Debian/Ubuntu: `apt install ffmpeg` and `curl -fsSL https://deno.land/install.sh | sh`
 6. Configure and run:
 
 ```bash
@@ -48,13 +56,27 @@ python bot.py
 
 To stop the bot, type `stop` in the same terminal (or press Ctrl+C).
 
+When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups is kept in `state.json` (runtime data, keep it out of git). A hard crash or power loss skips the notice.
+
+### Cookies (optional, for Instagram / YouTube)
+
+If Instagram or YouTube refuses downloads ("login required", "sign in to confirm you're not a bot"), export cookies from a browser where you're logged in (e.g. with the *Get cookies.txt LOCALLY* extension) and save them as:
+
+```
+cookies/instagram.txt
+cookies/youtube.txt
+```
+
+The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.
+
 ## Limitations
 
 - Max 50 MB per video (Bot API upload limit).
+- YouTube and Instagram actively fight downloaders, so they break more often than TikTok.
 - Slideshows are parsed from TikTok's web page, which can change without notice.
-- TikTok changes things often — if downloads break, run `pip install -U yt-dlp`.
+- Platforms change things often — if downloads break, run `pip install -U "yt-dlp[default]"`.
 - Cache is in memory and resets on restart.
 
 ## Disclaimer
 
-For personal use. Respect creators' rights and TikTok's Terms of Service — don't reupload other people's content as your own.
+For personal use. Respect creators' rights and the platforms' Terms of Service — don't reupload other people's content as your own.

@@ -1,0 +1,18 @@
+# Code style: PEP 8 (pycodestyle + pep8-naming) and PEP 257 (pydocstyle).
+# Check:  ruff check .      Format:  ruff format .
+line-length = 79
+
+[lint]
+select = [
+    "E", "W",  # pycodestyle (PEP 8)
+    "N",       # pep8-naming
+    "D",       # pydocstyle (PEP 257)
+    "F",       # pyflakes: unused imports, undefined names
+    "I",       # import sorting
+]
+
+[lint.pydocstyle]
+convention = "pep257"
+
+[lint.pycodestyle]
+max-doc-length = 72  # PEP 8 limit for docstrings and comments
