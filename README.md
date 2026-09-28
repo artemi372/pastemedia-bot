@@ -2,6 +2,11 @@
 
 Inline Telegram bot that downloads TikTok videos without watermark.
 
+> [!WARNING]
+> **This project is vibe-coded.** It was written with heavy help from AI and hasn't been
+> thoroughly reviewed or tested. It works on my machine, but expect rough edges and bugs.
+> Use at your own risk, and read the code before running it anywhere important.
+
 Type in any chat:
 
 ```
@@ -35,6 +40,8 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
 python bot.py
 ```
+
+To stop the bot, type `stop` in the same terminal (or press Ctrl+C).
 
 ## Limitations
 
