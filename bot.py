@@ -73,6 +73,7 @@ from aiogram.types import (
     InputTextMessageContent,
     LinkPreviewOptions,
     Message,
+    ReactionTypeEmoji,
     User,
 )
 from aiogram.utils.chat_action import ChatActionSender
@@ -90,6 +91,10 @@ STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 REPO_URL = "https://github.com/artemi372/pastemedia-bot"
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
+# Reactions on the message with a link. Bots can only use Telegram's
+# standard reaction emoji.
+REACTION_WORKING = "👀"
+REACTION_FAILED = "🤷"
 ERROR_TTL = 15  # seconds before error messages in groups are deleted
 SLOW_AFTER = 20  # seconds before "taking longer than usual"
 DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
@@ -1012,6 +1017,21 @@ async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
         return items
 
 
+async def react(bot: Bot, msg: Message, emoji: str | None):
+    """Set a reaction on a message, or remove it with emoji=None.
+
+    Group admins can restrict reactions, so a refused reaction is only
+    logged: the download goes on without it.
+    """
+    reaction = [ReactionTypeEmoji(emoji=emoji)] if emoji else []
+    try:
+        await bot.set_message_reaction(
+            msg.chat.id, msg.message_id, reaction=reaction
+        )
+    except Exception as e:
+        logging.info("couldn't set reaction %r: %s", emoji, e)
+
+
 def is_silent(chat: Chat) -> bool:
     """Tell whether messages to a chat should come without a sound.
 
@@ -1114,16 +1134,19 @@ async def on_link(msg: Message, bot: Bot):
     """Reply with the media to a link sent directly to the bot."""
     lang = lang_of(msg.from_user)
     url = LINK_RE.search(msg.text).group(0)
+    await react(bot, msg, REACTION_WORKING)
     status = await msg.reply(t(lang, "downloading"))
     try:
         async with slow_notice(lambda: status.edit_text(t(lang, "slow"))):
             await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
+        await react(bot, msg, REACTION_FAILED)
         # In private chats the error stays, so the user can see what
         # happened with their link.
         await status.edit_text(error_text(lang, e))
         return
+    await react(bot, msg, None)
     # The video is already sent, so failing to clean up isn't an error.
     try:
         await status.delete()
@@ -1167,18 +1190,23 @@ async def track_groups(
 async def on_group_link(msg: Message, bot: Bot):
     """Reply with the media to a link posted in a group.
 
-    No "Downloading..." text here to keep the chat clean: the "sending
-    video..." status at the top of the chat shows that the bot works.
+    No "Downloading..." text here to keep the chat clean: a 👀 reaction
+    on the link and the "sending video..." status show that the bot
+    works.
     """
     url = LINK_RE.search(msg.text).group(0)
+    await react(bot, msg, REACTION_WORKING)
     try:
         async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
             await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
+        await react(bot, msg, REACTION_FAILED)
         lang = group_lang(msg.chat.id, msg.from_user)
         error = await msg.reply(error_text(lang, e), disable_notification=True)
         delete_later(bot, error.chat.id, error.message_id)
+        return
+    await react(bot, msg, None)
 
 
 async def is_group_admin(bot: Bot, chat_id: int, user: User | None) -> bool:

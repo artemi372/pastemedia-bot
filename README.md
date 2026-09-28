@@ -18,7 +18,7 @@ Type in any chat:
 
 pick the result — the bot replaces it with the video.
 
-You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. In groups, error messages delete themselves after 15 seconds to keep the chat clean.
+You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. While downloading, the bot puts 👀 on the message with the link (removed when done, 🤷 on failure). In groups, error messages delete themselves after 15 seconds to keep the chat clean.
 
 | Platform | Links | Status |
 |---|---|---|
