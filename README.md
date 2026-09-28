@@ -7,6 +7,9 @@ Telegram bot that downloads short videos: **TikTok** without watermark, **YouTub
 > thoroughly reviewed or tested. It works on my machine, but expect rough edges and bugs.
 > Use at your own risk, and read the code before running it anywhere important.
 
+> [!NOTE]
+> **Instagram downloads don't work yet.** Instagram blocks downloads without a logged-in account. TikTok and YouTube Shorts work normally.
+
 Type in any chat:
 
 ```
@@ -21,7 +24,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 |---|---|---|
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
-| Instagram | Reels and video posts | ⚠️ often needs cookies from a logged-in account |
+| Instagram | Reels and video posts | ❌ not working yet (Instagram blocks anonymous downloads) |
 
 **Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. In groups, admins can set one language for the whole group with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
 
@@ -54,11 +57,16 @@ cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
 python bot.py
 ```
 
-To stop the bot, type `stop` in the same terminal (or press Ctrl+C).
+Commands in the terminal where the bot runs:
+
+- `stop` (or Ctrl+C) — shut the bot down; groups get "🌙 The bot is off for now, back later" and the profile shows 🔴 Offline
+- `restart` — restart the bot with the latest code; groups get "🔄 The bot is restarting", and the bot starts again by itself a few seconds later
+
+Use these instead of closing the window or the PyCharm Stop button: those kill the bot before it can post notices or update its status.
 
 The bot shows its status in its Telegram profile: 🟢 Online while running, 🔴 Offline after a normal stop.
 
-When the bot stops, it posts a "restarting" message in every group it's in, and deletes those messages on the next start. The list of groups, per-user and per-group settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice and the offline status.
+These group messages are deleted on the next start. The list of groups, per-user and per-group settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice and the offline status.
 
 ### Cookies (optional, for Instagram / YouTube)
 

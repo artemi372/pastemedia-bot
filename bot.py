@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Any, Awaitable, Callable
@@ -93,6 +94,14 @@ DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
 # Seconds to upload a file to Telegram. aiogram's default of 60 is too
 # short for a 1080p video of tens of megabytes on a home connection.
 UPLOAD_TIMEOUT = 300
+
+# How the bot is being stopped: "shutdown" (off for a while, the
+# default, also for Ctrl+C) or "restart" (back in a few seconds).
+stop_mode = "shutdown"
+# Exit code that asks the supervisor to start the bot again.
+RESTART_EXIT_CODE = 3
+# Set in the bot process started by the supervisor.
+CHILD_ENV = "PASTEMEDIA_BOT_CHILD"
 SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1071,15 +1080,16 @@ async def on_placeholder_tap(c: CallbackQuery):
 # ---------- startup and shutdown ----------
 
 
-async def post_restart_notices(bot: Bot):
-    """Tell every group that the bot is restarting.
+async def post_restart_notices(bot: Bot, key: str = "restarting"):
+    """Tell every group that the bot is restarting or shutting down.
 
-    The message ids are saved so the next run can delete them.
+    `key` is the text to post: "restarting" or "shutting_down". The
+    message ids are saved so the next run can delete them.
     """
     for chat_id, lang in list(state["groups"].items()):
         try:
             msg = await bot.send_message(
-                int(chat_id), t(lang, "restarting"), disable_notification=True
+                int(chat_id), t(lang, key), disable_notification=True
             )
             state["restart_notices"][chat_id] = msg.message_id
         except (TelegramForbiddenError, TelegramBadRequest) as e:
@@ -1095,7 +1105,7 @@ async def post_restart_notices(bot: Bot):
 
 
 async def delete_restart_notices(bot: Bot):
-    """Delete the "restarting" messages left by the previous run."""
+    """Delete the restart/shutdown messages left by the previous run."""
     for chat_id, message_id in list(state["restart_notices"].items()):
         try:
             await bot.delete_message(int(chat_id), message_id)
@@ -1187,33 +1197,44 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    """Warn the groups and show the bot as offline."""
-    await post_restart_notices(bot)
-    await set_profile_status(bot, online=False)
+    """Warn the groups; on a real shutdown also show the bot offline.
+
+    A restart takes only a few seconds, so the profile status is left
+    as it is instead of flickering to offline and back.
+    """
+    if stop_mode == "restart":
+        await post_restart_notices(bot, "restarting")
+    else:
+        await post_restart_notices(bot, "shutting_down")
+        await set_profile_status(bot, online=False)
 
 
 def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
     """Read commands from the terminal in a background thread.
 
-    Typing "stop" shuts the bot down gracefully. A daemon thread is
-    used so that a blocked input() never keeps the process alive after
-    Ctrl+C.
+    "stop" shuts the bot down for a while, "restart" restarts it with
+    the latest code. A daemon thread is used so that a blocked input()
+    never keeps the process alive after Ctrl+C.
     """
 
     def worker():
-        """Wait for commands until "stop" or the end of input."""
+        """Wait for commands until "stop", "restart" or end of input."""
+        global stop_mode
         while True:
             try:
                 cmd = input().strip().lower()
             except (EOFError, KeyboardInterrupt):
                 # No interactive terminal (e.g. running as a service).
                 return
-            if cmd in ("stop", "exit", "quit"):
-                logging.info("stopping bot...")
+            if cmd in ("stop", "exit", "quit", "restart"):
+                stop_mode = "restart" if cmd == "restart" else "shutdown"
+                logging.info(
+                    "%s...", "restarting" if cmd == "restart" else "stopping"
+                )
                 asyncio.run_coroutine_threadsafe(dp.stop_polling(), loop)
                 return
             if cmd:
-                print("Unknown command. Available: stop")
+                print("Unknown command. Available: stop, restart")
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -1229,7 +1250,7 @@ async def main():
     dp.startup.register(on_startup)
     # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
     dp.shutdown.register(on_shutdown)
-    print("Bot is running. Type 'stop' to shut it down.")
+    print("Bot is running. Type 'stop' to shut it down, 'restart' to restart.")
     start_console(dp, asyncio.get_running_loop())
     try:
         await setup_bot_profile(bot)
@@ -1239,5 +1260,31 @@ async def main():
         logging.info("bot stopped")
 
 
+def supervise() -> int:
+    """Run the bot in a child process and restart it when asked.
+
+    The child exits with RESTART_EXIT_CODE after "restart", and a new
+    child is started, so code changes are picked up. The child shares
+    this terminal, so console commands keep working. Ctrl+C reaches
+    both processes: the child shuts down gracefully, and the
+    supervisor just waits for it.
+    """
+    env = {**os.environ, CHILD_ENV: "1"}
+    while True:
+        child = subprocess.Popen([sys.executable, *sys.argv], env=env)
+        while True:
+            try:
+                code = child.wait()
+                break
+            except KeyboardInterrupt:
+                continue  # the child handles Ctrl+C itself
+        if code != RESTART_EXIT_CODE:
+            return code
+        print("Restarting the bot...")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    if os.environ.get(CHILD_ENV):
+        asyncio.run(main())
+        sys.exit(RESTART_EXIT_CODE if stop_mode == "restart" else 0)
+    sys.exit(supervise())

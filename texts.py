@@ -58,6 +58,7 @@ TEXTS = {
         "status_offline": "🔴 Offline",
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
+        "shutting_down": "🌙 The bot is off for now, back later.",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -134,6 +135,7 @@ TEXTS = {
         "timeout": (
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
         ),
+        "shutting_down": "🌙 Бот выключен, вернусь позже.",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -209,6 +211,7 @@ TEXTS = {
         "timeout": (
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
         ),
+        "shutting_down": "🌙 Bot on välja lülitatud, tulen hiljem tagasi.",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "
