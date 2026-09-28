@@ -28,8 +28,12 @@ import threading
 import httpx
 import yt_dlp
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ChatType, ParseMode
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     ChosenInlineResult,
     FSInputFile,
@@ -40,7 +44,11 @@ from aiogram.types import (
     InlineQueryResultCachedVideo,
     InputMediaVideo,
     InputTextMessageContent,
+    Message,
+    User,
 )
+
+from texts import DEFAULT_LANG, LANG_NAMES, TEXTS, detect_lang, t
 
 load_dotenv()
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -59,6 +67,25 @@ router = Router()
 
 cache: dict[str, str] = {}              # url -> file_id (use sqlite/redis in production)
 locks: dict[str, asyncio.Lock] = {}     # prevents downloading the same link twice in parallel
+
+
+user_langs: dict[int, str] = {}         # user_id -> language chosen via /language (in memory)
+
+
+class TooBigError(RuntimeError):
+    """The file exceeds the Bot API upload limit."""
+
+
+def lang_of(user: User | None) -> str:
+    """Language for a user: manual choice from /language, otherwise their Telegram app language."""
+    if user is None:
+        return DEFAULT_LANG
+    return user_langs.get(user.id) or detect_lang(user.language_code)
+
+
+def error_text(lang: str, e: Exception) -> str:
+    """Turn an exception into a friendly message. Details go to the log, not to the user."""
+    return t(lang, "too_big" if isinstance(e, TooBigError) else "failed")
 
 
 def rid(url: str) -> str:
@@ -162,7 +189,7 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
     subprocess.run(cmd, check=True)
 
     if os.path.getsize(out) > MAX_BYTES:
-        raise RuntimeError("rendered slideshow is larger than 50 MB")
+        raise TooBigError("rendered slideshow is larger than 50 MB")
     duration = len(img_paths) * SLIDE_SECONDS
     return out, {"width": 1080, "height": 1920, "duration": duration}
 
@@ -187,7 +214,7 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
         path = ydl.prepare_filename(info)
 
     if os.path.getsize(path) > MAX_BYTES:
-        raise RuntimeError("video is larger than 50 MB, Bot API can't upload it")
+        raise TooBigError("video is larger than 50 MB, Bot API can't upload it")
     return path, info
 
 
@@ -209,16 +236,83 @@ async def get_file_id(bot: Bot, url: str) -> str:
                 duration=int(info.get("duration") or 0) or None,
                 supports_streaming=True,
                 caption=url,
+                parse_mode=None,  # URLs may contain "&", which would break HTML parsing
             )
         cache[url] = msg.video.file_id
         return cache[url]
 
 
-# ---------- handlers ----------
+# ---------- handlers: private chat ----------
+
+private = F.chat.type == ChatType.PRIVATE
+
+
+@router.message(CommandStart(), private)
+async def on_start(msg: Message, bot: Bot):
+    """Greet the user and explain how to use the bot."""
+    lang = lang_of(msg.from_user)
+    me = await bot.me()
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        # Opens the chat picker with "@bot " already typed in
+        InlineKeyboardButton(text=t(lang, "try_button"), switch_inline_query=""),
+    ]])
+    await msg.answer(t(lang, "start", bot=me.username), reply_markup=kb)
+
+
+@router.message(Command("language"), private)
+async def on_language(msg: Message):
+    """Show language picker buttons."""
+    lang = lang_of(msg.from_user)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=name, callback_data=f"lang:{code}")]
+        for code, name in LANG_NAMES.items()
+    ])
+    await msg.answer(t(lang, "choose_lang"), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("lang:"))
+async def on_language_chosen(c: CallbackQuery):
+    """Save the chosen language and confirm it."""
+    code = c.data.split(":", 1)[1]
+    if code not in TEXTS:
+        await c.answer()
+        return
+    user_langs[c.from_user.id] = code
+    await c.message.edit_text(t(code, "lang_set"))
+    await c.answer()
+
+
+@router.message(F.text.regexp(TT_RE, mode="search"), private)
+async def on_link(msg: Message, bot: Bot):
+    """A TikTok link sent directly to the bot: download and reply with the video."""
+    lang = lang_of(msg.from_user)
+    url = TT_RE.search(msg.text).group(0)
+    status = await msg.reply(t(lang, "downloading"))
+    try:
+        file_id = await get_file_id(bot, url)
+        await msg.reply_video(file_id, supports_streaming=True)
+    except Exception as e:
+        logging.exception("download failed: %s", url)
+        await status.edit_text(error_text(lang, e))
+        return
+    try:
+        await status.delete()  # the video is already sent; failing to clean up isn't an error
+    except Exception:
+        logging.warning("couldn't delete status message")
+
+
+@router.message(private)
+async def on_other(msg: Message):
+    """Anything else in private chat: hint that a link is expected."""
+    await msg.answer(t(lang_of(msg.from_user), "no_link"))
+
+
+# ---------- handlers: inline mode ----------
 
 @router.inline_query()
 async def on_inline(q: InlineQuery):
     """Answer an inline query: cached video if available, otherwise a placeholder."""
+    lang = lang_of(q.from_user)
     m = TT_RE.search(q.query)
     if not m:
         await q.answer([], cache_time=1, is_personal=True)
@@ -227,8 +321,11 @@ async def on_inline(q: InlineQuery):
 
     if url in cache:  # already downloaded, send the video right away
         await q.answer(
-            [InlineQueryResultCachedVideo(id="c" + rid(url), video_file_id=cache[url], title="🎬 TikTok without watermark")],
-            cache_time=300,
+            [InlineQueryResultCachedVideo(
+                id="c" + rid(url), video_file_id=cache[url], title=t(lang, "cached_title"),
+            )],
+            cache_time=1,
+            is_personal=True,
         )
         return
 
@@ -236,12 +333,12 @@ async def on_inline(q: InlineQuery):
         [
             InlineQueryResultArticle(
                 id=rid(url),
-                title="📥 Download TikTok without watermark",
+                title=t(lang, "inline_title"),
                 description=url,
-                input_message_content=InputTextMessageContent(message_text="⏳ Downloading video…"),
+                input_message_content=InputTextMessageContent(message_text=t(lang, "downloading")),
                 # The keyboard is REQUIRED, otherwise chosen_inline_result has no inline_message_id
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="⏳ loading…", callback_data="noop")]]
+                    inline_keyboard=[[InlineKeyboardButton(text=t(lang, "loading_button"), callback_data="noop")]]
                 ),
             )
         ],
@@ -258,6 +355,7 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
     m = TT_RE.search(r.query)
     if not m:
         return
+    lang = lang_of(r.from_user)
     try:
         file_id = await get_file_id(bot, m.group(0))
         await bot.edit_message_media(
@@ -265,14 +363,25 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
             media=InputMediaVideo(media=file_id, supports_streaming=True),
         )
     except Exception as e:
-        logging.exception("download failed")
-        await bot.edit_message_text(inline_message_id=r.inline_message_id, text=f"❌ Failed: {e}")
+        logging.exception("download failed: %s", m.group(0))
+        await bot.edit_message_text(inline_message_id=r.inline_message_id, text=error_text(lang, e))
 
 
-@router.callback_query(lambda c: c.data == "noop")
+@router.callback_query(F.data == "noop")
 async def noop(c: CallbackQuery):
     """Handle taps on the placeholder button."""
-    await c.answer("Hang on, downloading 🙂")
+    await c.answer(t(lang_of(c.from_user), "hang_on"))
+
+
+async def set_commands(bot: Bot):
+    """Register the command menu in every supported language (Telegram picks by app language)."""
+    for code in TEXTS:
+        commands = [
+            BotCommand(command="start", description=t(code, "cmd_start")),
+            BotCommand(command="language", description=t(code, "cmd_language")),
+        ]
+        # The default language is also registered without language_code, as a fallback for everyone else
+        await bot.set_my_commands(commands, language_code=None if code == DEFAULT_LANG else code)
 
 
 def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
@@ -297,13 +406,16 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
 
 
 async def main():
-    bot = Bot(BOT_TOKEN)
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
     print("Bot is running. Type 'stop' to shut it down.")
     start_console(dp, asyncio.get_running_loop())
     try:
-        await dp.start_polling(bot, allowed_updates=["inline_query", "chosen_inline_result", "callback_query"])
+        await set_commands(bot)
+        await dp.start_polling(
+            bot, allowed_updates=["message", "inline_query", "chosen_inline_result", "callback_query"]
+        )
     finally:
         await bot.session.close()
         logging.info("bot stopped")

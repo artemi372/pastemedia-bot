@@ -15,6 +15,10 @@ Type in any chat:
 
 pick the result — the bot replaces it with the clean video.
 
+You can also just send a link to the bot in a private chat.
+
+**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
+
 ## How it works
 
 1. Inline query → the bot instantly returns a placeholder.
