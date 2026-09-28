@@ -1,4 +1,4 @@
-# pastetiktokvideo
+# pastemedia-bot
 
 Telegram bot that downloads short videos: **TikTok** without watermark, **YouTube Shorts** and **Instagram Reels**.
 
@@ -47,8 +47,8 @@ TikTok photo slideshows are rendered into a video (images + original music) with
 6. Configure and run:
 
 ```bash
-git clone https://github.com/artemi372/pastetiktokvideo.git
-cd pastetiktokvideo
+git clone https://github.com/artemi372/pastemedia-bot.git
+cd pastemedia-bot
 pip install -r requirements.txt
 cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
 python bot.py
