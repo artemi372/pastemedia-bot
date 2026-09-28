@@ -579,7 +579,7 @@ async def get_file_id(bot: Bot, url: str) -> str:
 
 def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
     """Split a list into parts of at most `size` items."""
-    return [items[i : i + size] for i in range(0, len(items), size)]
+    return [items[i: i + size] for i in range(0, len(items), size)]
 
 
 async def get_album_ids(bot: Bot, url: str) -> list[str]:
