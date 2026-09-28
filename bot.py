@@ -25,6 +25,7 @@ hold only one media item, not an album.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -41,7 +42,11 @@ import yt_dlp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+)
 from aiogram.filters import (
     JOIN_TRANSITION,
     LEAVE_TRANSITION,
@@ -82,6 +87,11 @@ STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 ERROR_TTL = 15  # seconds before error messages are deleted
+SLOW_AFTER = 20  # seconds before "taking longer than usual"
+DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
+# Seconds to upload a file to Telegram. aiogram's default of 60 is too
+# short for a 1080p video of tens of megabytes on a home connection.
+UPLOAD_TIMEOUT = 300
 SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -150,6 +160,10 @@ state: dict[str, dict[str, Any]] = {
 
 class TooBigError(RuntimeError):
     """The file exceeds the Bot API upload limit."""
+
+
+class DownloadTimeoutError(RuntimeError):
+    """The download took longer than DOWNLOAD_TIMEOUT."""
 
 
 def load_state():
@@ -255,7 +269,49 @@ def error_text(lang: str, e: Exception) -> str:
 
     Technical details go to the log, not to the chat.
     """
-    return t(lang, "too_big" if isinstance(e, TooBigError) else "failed")
+    if isinstance(e, TooBigError):
+        return t(lang, "too_big")
+    # A network error while uploading is almost always a timeout.
+    if isinstance(e, (DownloadTimeoutError, TelegramNetworkError)):
+        return t(lang, "timeout")
+    return t(lang, "failed")
+
+
+@contextlib.asynccontextmanager
+async def slow_notice(action: Callable[[], Awaitable[Any]]):
+    """Run `action` if the wrapped block takes longer than SLOW_AFTER.
+
+    Used to change "Downloading..." into "taking longer than usual".
+    The action is cancelled as soon as the block finishes.
+    """
+
+    async def worker():
+        """Wait, then run the action; failures only get logged."""
+        await asyncio.sleep(SLOW_AFTER)
+        try:
+            await action()
+        except Exception as e:
+            logging.warning("couldn't show the slow notice: %s", e)
+
+    task = asyncio.create_task(worker())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+async def run_with_timeout(func: Callable, *args: Any) -> Any:
+    """Run a blocking function in a thread, with DOWNLOAD_TIMEOUT.
+
+    Python can't stop a running thread, so on timeout the work keeps
+    going in the background, but the caller gets an answer right away.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(func, *args), DOWNLOAD_TIMEOUT
+        )
+    except asyncio.TimeoutError as e:
+        raise DownloadTimeoutError(f"{func.__name__} timed out") from e
 
 
 def platform_of(url: str) -> str:
@@ -436,6 +492,7 @@ def _download_images(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
             + ["-q:v", "2", out],
             check=True,
+            timeout=DOWNLOAD_TIMEOUT,
         )
         paths.append(out)
     return paths
@@ -500,7 +557,7 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
     # An explicit length: the looped music would otherwise never end.
     out = os.path.join(outdir, "slideshow.mp4")
     cmd += ["-t", str(total), "-movflags", "+faststart", out]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=DOWNLOAD_TIMEOUT)
 
     if os.path.getsize(out) > MAX_BYTES:
         raise TooBigError("rendered slideshow is larger than 50 MB")
@@ -524,6 +581,8 @@ def generic_opts(outdir: str, platform: str) -> dict:
         "quiet": True,
         "noplaylist": True,
         "no_warnings": True,
+        # Don't wait forever on a stalled connection.
+        "socket_timeout": 30,
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
         "format": "bv*+ba/b",
         # Prefer H.264 + AAC: HEVC, AV1 and VP9 don't play on some
@@ -568,7 +627,12 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
     if "/photo/" in full_url:
         return make_slideshow(full_url, outdir)
 
-    base = {"quiet": True, "noplaylist": True, "no_warnings": True}
+    base = {
+        "quiet": True,
+        "noplaylist": True,
+        "no_warnings": True,
+        "socket_timeout": 30,
+    }
     with yt_dlp.YoutubeDL(base) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -600,8 +664,9 @@ async def get_file_id(bot: Bot, url: str) -> str:
     async with lock:
         if url in cache:
             return cache[url]
-        with tempfile.TemporaryDirectory() as tmp:
-            path, info = await asyncio.to_thread(download, url, tmp)
+        # A timed-out download may still hold its files open.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path, info = await run_with_timeout(download, url, tmp)
             msg = await bot.send_video(
                 STORAGE_CHAT_ID,
                 FSInputFile(path),
@@ -612,6 +677,7 @@ async def get_file_id(bot: Bot, url: str) -> str:
                 caption=url,
                 # URLs may contain "&", which would break HTML parsing.
                 parse_mode=None,
+                request_timeout=UPLOAD_TIMEOUT,
             )
         if msg.video is None:
             raise RuntimeError("Telegram didn't return the uploaded video")
@@ -637,10 +703,8 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
         if url in album_cache:
             return album_cache[url]
         file_ids = []
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = await asyncio.to_thread(
-                download_slideshow_images, url, tmp
-            )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            paths = await run_with_timeout(download_slideshow_images, url, tmp)
             for part in chunks(paths):
                 # A caption on the first item is shown under the whole
                 # album. parse_mode=None: URLs may contain "&".
@@ -652,7 +716,9 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
                     )
                     for i, p in enumerate(part)
                 ]
-                sent = await bot.send_media_group(STORAGE_CHAT_ID, media)
+                sent = await bot.send_media_group(
+                    STORAGE_CHAT_ID, media, request_timeout=UPLOAD_TIMEOUT
+                )
                 # The last PhotoSize is the largest one.
                 file_ids += [m.photo[-1].file_id for m in sent if m.photo]
         if not file_ids:
@@ -735,7 +801,8 @@ async def on_link(msg: Message, bot: Bot):
     url = LINK_RE.search(msg.text).group(0)
     status = await msg.reply(t(lang, "downloading"))
     try:
-        await reply_with_media(bot, msg, url)
+        async with slow_notice(lambda: status.edit_text(t(lang, "slow"))):
+            await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
         await status.edit_text(error_text(lang, e))
@@ -913,9 +980,6 @@ async def on_inline(q: InlineQuery):
         await q.answer([cached], cache_time=1, is_personal=True)
         return
 
-    loading_button = InlineKeyboardButton(
-        text=t(lang, "loading_button"), callback_data="noop"
-    )
     placeholder = InlineQueryResultArticle(
         id=result_id(url),
         title=t(lang, "inline_title"),
@@ -925,9 +989,17 @@ async def on_inline(q: InlineQuery):
         ),
         # The keyboard is required: without it chosen_inline_result
         # has no inline_message_id.
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[loading_button]]),
+        reply_markup=loading_keyboard(lang),
     )
     await q.answer([placeholder], cache_time=1, is_personal=True)
+
+
+def loading_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Build the "loading..." button shown on the inline placeholder."""
+    button = InlineKeyboardButton(
+        text=t(lang, "loading_button"), callback_data="noop"
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
 @router.chosen_inline_result()
@@ -939,8 +1011,18 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
     if not m:
         return
     lang = lang_of(r.from_user)
+
+    def show_slow():
+        """Replace "Downloading..." with "taking longer than usual"."""
+        return bot.edit_message_text(
+            inline_message_id=r.inline_message_id,
+            text=t(lang, "slow"),
+            reply_markup=loading_keyboard(lang),
+        )
+
     try:
-        file_id = await get_file_id(bot, m.group(0))
+        async with slow_notice(show_slow):
+            file_id = await get_file_id(bot, m.group(0))
         await bot.edit_message_media(
             inline_message_id=r.inline_message_id,
             media=InputMediaVideo(media=file_id, supports_streaming=True),
