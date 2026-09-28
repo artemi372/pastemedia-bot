@@ -86,7 +86,7 @@ STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
-ERROR_TTL = 15  # seconds before error messages are deleted
+ERROR_TTL = 15  # seconds before error messages in groups are deleted
 SLOW_AFTER = 20  # seconds before "taking longer than usual"
 DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
 # Seconds to upload a file to Telegram. aiogram's default of 60 is too
@@ -581,6 +581,8 @@ def generic_opts(outdir: str, platform: str) -> dict:
         "quiet": True,
         "noplaylist": True,
         "no_warnings": True,
+        # "quiet" doesn't hide the progress bar, which floods the log.
+        "noprogress": True,
         # Don't wait forever on a stalled connection.
         "socket_timeout": 30,
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
@@ -631,6 +633,7 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
         "quiet": True,
         "noplaylist": True,
         "no_warnings": True,
+        "noprogress": True,
         "socket_timeout": 30,
     }
     with yt_dlp.YoutubeDL(base) as ydl:
@@ -805,8 +808,9 @@ async def on_link(msg: Message, bot: Bot):
             await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
+        # In private chats the error stays, so the user can see what
+        # happened with their link.
         await status.edit_text(error_text(lang, e))
-        delete_later(bot, status.chat.id, status.message_id)
         return
     # The video is already sent, so failing to clean up isn't an error.
     try:
@@ -1113,6 +1117,7 @@ def fit(text: str, limit: int) -> str:
     """
 
     def size(s: str) -> int:
+        """Return the length of a text in UTF-16 code units."""
         return len(s.encode("utf-16-le")) // 2
 
     if size(text) <= limit:
