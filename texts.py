@@ -18,7 +18,7 @@ TEXTS = {
             "👋 Hi! I download short videos:\n"
             "• <b>TikTok</b> without watermark (slideshows as albums)\n"
             "• <b>YouTube Shorts</b>\n"
-            "• <b>Instagram Reels</b>\n"
+            "• <b>Instagram</b> Reels and posts (carousels as albums)\n"
             "\n"
             "<b>In any chat:</b> type <code>@{bot} </code>, paste a link and "
             "tap the result.\n"
@@ -49,16 +49,27 @@ TEXTS = {
         "lang_set": "✅ Language: English",
         "cmd_start": "Start / help",
         "cmd_language": "Change language",
-        "admins_only": "Only group admins can change the language.",
+        "admins_only": "Only group admins can change these settings.",
         "choose_group_lang": "Choose the language for this group:",
         "group_lang_set": "✅ Group language: English",
         "cmd_group_language": "Change the group language (admins)",
-        "group_lang_hint": "\n\nAdmins can change my language with /language.",
+        "group_lang_hint": (
+            "\n\nAdmins: /language changes my language, /notices turns "
+            "restart notices on or off."
+        ),
         "status_online": "🟢 Online",
         "status_offline": "🔴 Offline",
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
         "shutting_down": "🌙 The bot is off for now, back later.",
+        "cmd_group_notices": "Restart notices on/off (admins)",
+        "choose_notices": ("Should I post here when I restart or shut down?"),
+        "notices_now_on": "Now: 🔔 on",
+        "notices_now_off": "Now: 🔕 off",
+        "notices_on_button": "🔔 Yes",
+        "notices_off_button": "🔕 No",
+        "notices_set_on": ("🔔 Restart and shutdown notices are on."),
+        "notices_set_off": ("🔕 Restart and shutdown notices are off."),
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -90,7 +101,7 @@ TEXTS = {
             "👋 Привет! Я скачиваю короткие видео:\n"
             "• <b>TikTok</b> без вотермарки (слайд-шоу — альбомом)\n"
             "• <b>YouTube Shorts</b>\n"
-            "• <b>Instagram Reels</b>\n"
+            "• <b>Instagram</b>: рилсы и посты (карусели — альбомом)\n"
             "\n"
             "<b>В любом чате:</b> напиши <code>@{bot} </code>, вставь ссылку "
             "и нажми на результат.\n"
@@ -122,12 +133,13 @@ TEXTS = {
         "lang_set": "✅ Язык: русский",
         "cmd_start": "Старт / помощь",
         "cmd_language": "Сменить язык",
-        "admins_only": "Менять язык могут только админы группы.",
+        "admins_only": "Менять настройки могут только админы группы.",
         "choose_group_lang": "Выберите язык для этой группы:",
         "group_lang_set": "✅ Язык группы: русский",
         "cmd_group_language": "Сменить язык группы (админы)",
         "group_lang_hint": (
-            "\n\nАдмины могут сменить мой язык командой /language."
+            "\n\nАдминам: /language меняет мой язык, /notices включает или "
+            "выключает уведомления о перезапуске."
         ),
         "status_online": "🟢 Работает",
         "status_offline": "🔴 Выключен",
@@ -136,6 +148,20 @@ TEXTS = {
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
         ),
         "shutting_down": "🌙 Бот выключен, вернусь позже.",
+        "cmd_group_notices": "Уведомления о рестарте (админы)",
+        "choose_notices": (
+            "Писать сюда, когда я перезапускаюсь или выключаюсь?"
+        ),
+        "notices_now_on": "Сейчас: 🔔 включены",
+        "notices_now_off": "Сейчас: 🔕 выключены",
+        "notices_on_button": "🔔 Да",
+        "notices_off_button": "🔕 Нет",
+        "notices_set_on": (
+            "🔔 Уведомления о перезапуске и выключении включены."
+        ),
+        "notices_set_off": (
+            "🔕 Уведомления о перезапуске и выключении выключены."
+        ),
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -168,7 +194,7 @@ TEXTS = {
             "👋 Tere! Laadin alla lühivideoid:\n"
             "• <b>TikTok</b> ilma vesimärgita (slaidiesitlused albumina)\n"
             "• <b>YouTube Shorts</b>\n"
-            "• <b>Instagram Reels</b>\n"
+            "• <b>Instagram</b> Reels ja postitused (karussellid albumina)\n"
             "\n"
             "<b>Igas vestluses:</b> kirjuta <code>@{bot} </code>, kleebi link "
             "ja vajuta tulemusele.\n"
@@ -198,12 +224,13 @@ TEXTS = {
         "lang_set": "✅ Keel: eesti",
         "cmd_start": "Alusta / abi",
         "cmd_language": "Muuda keelt",
-        "admins_only": "Keelt saavad muuta ainult grupi administraatorid.",
+        "admins_only": "Seadeid saavad muuta ainult grupi administraatorid.",
         "choose_group_lang": "Vali selle grupi keel:",
         "group_lang_set": "✅ Grupi keel: eesti",
         "cmd_group_language": "Muuda grupi keelt (adminid)",
         "group_lang_hint": (
-            "\n\nAdminid saavad minu keelt muuta käsuga /language."
+            "\n\nAdminidele: /language muudab minu keelt, /notices lülitab "
+            "taaskäivituse teated sisse või välja."
         ),
         "status_online": "🟢 Töötab",
         "status_offline": "🔴 Väljas",
@@ -212,6 +239,20 @@ TEXTS = {
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
         ),
         "shutting_down": "🌙 Bot on välja lülitatud, tulen hiljem tagasi.",
+        "cmd_group_notices": "Taaskäivituse teated (adminid)",
+        "choose_notices": (
+            "Kas teatada siin, kui ma taaskäivitun või välja lülitun?"
+        ),
+        "notices_now_on": "Praegu: 🔔 sees",
+        "notices_now_off": "Praegu: 🔕 väljas",
+        "notices_on_button": "🔔 Jah",
+        "notices_off_button": "🔕 Ei",
+        "notices_set_on": (
+            "🔔 Taaskäivituse ja väljalülitamise teated on sees."
+        ),
+        "notices_set_off": (
+            "🔕 Taaskäivituse ja väljalülitamise teated on väljas."
+        ),
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "

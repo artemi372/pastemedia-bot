@@ -98,6 +98,8 @@ UPLOAD_TIMEOUT = 300
 # How the bot is being stopped: "shutdown" (off for a while, the
 # default, also for Ctrl+C) or "restart" (back in a few seconds).
 stop_mode = "shutdown"
+# True after "stop quiet" / "restart quiet": no messages in groups.
+quiet_stop = False
 # Exit code that asks the supervisor to start the bot again.
 RESTART_EXIT_CODE = 3
 # Set in the bot process started by the supervisor.
@@ -147,8 +149,10 @@ router = Router()
 
 # url -> Telegram file_id of the video (in memory)
 cache: dict[str, str] = {}
-# url -> Telegram file_ids of slideshow photos (in memory)
-album_cache: dict[str, list[str]] = {}
+# url -> album items as (kind, file_id), kind is "photo" or "video"
+album_cache: dict[str, list[tuple[str, str]]] = {}
+# Instagram post url -> its files as listed by gallery-dl (in memory)
+instagram_posts: dict[str, list[dict]] = {}
 # short url -> full url after redirects (in memory)
 resolved: dict[str, str] = {}
 # Prevents downloading the same link twice in parallel.
@@ -225,6 +229,15 @@ def set_chat_setting(chat_id: int, key: str, value: Any):
     """Save one setting of a group to the persistent state."""
     state["chats"].setdefault(str(chat_id), {})[key] = value
     save_state()
+
+
+def notices_enabled(chat_id: int | str) -> bool:
+    """Tell whether a group wants restart and shutdown notices.
+
+    They are on by default; group admins can turn them off with
+    /notices.
+    """
+    return state["chats"].get(str(chat_id), {}).get("notices", True)
 
 
 def forget_group(chat_id: int):
@@ -395,9 +408,25 @@ def resolve_url(url: str) -> str:
     return resolved[url]
 
 
-def is_slideshow(url: str) -> bool:
-    """Check whether a link points to a TikTok photo slideshow."""
-    return platform_of(url) == "tiktok" and "/photo/" in resolve_url(url)
+def is_instagram_post(url: str) -> bool:
+    """Check whether a link is an Instagram post (/p/), not a Reel.
+
+    Posts can be carousels of photos and videos; Reels are single
+    videos and go through yt-dlp like YouTube Shorts.
+    """
+    return platform_of(url) == "instagram" and "/p/" in url
+
+
+def is_album(url: str) -> bool:
+    """Check whether a link should be sent as an album.
+
+    That's a TikTok photo slideshow or an Instagram post (a carousel,
+    or a single photo or video, which is just an album of one).
+    """
+    platform = platform_of(url)
+    if platform == "tiktok":
+        return "/photo/" in resolve_url(url)
+    return is_instagram_post(url)
 
 
 def _page_json(html: str) -> list[dict]:
@@ -479,6 +508,21 @@ def _fetch_slideshow_item(c: httpx.Client, url: str) -> dict:
     raise RuntimeError("couldn't find slideshow data on the page")
 
 
+def convert_image(raw: str, out: str):
+    """Convert an image of any format (jpeg, webp...) with ffmpeg.
+
+    The output format comes from the extension of `out`.
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is not installed")
+    # -q:v 2 is high JPEG quality; ignored for PNG.
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", raw] + ["-q:v", "2", out],
+        check=True,
+        timeout=DOWNLOAD_TIMEOUT,
+    )
+
+
 def _download_images(
     c: httpx.Client, item: dict, outdir: str, ext: str
 ) -> list[str]:
@@ -487,8 +531,6 @@ def _download_images(
     TikTok mixes jpeg and webp, so every image is converted with
     ffmpeg into the given format (e.g. "jpg" or "png").
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed")
     paths = []
     for i, img in enumerate(item["imagePost"]["images"]):
         urls = img["imageURL"]["urlList"]
@@ -497,13 +539,7 @@ def _download_images(
         with open(raw, "wb") as f:
             f.write(c.get(src).content)
         out = os.path.join(outdir, f"{i:03}.{ext}")
-        # -q:v 2 is high JPEG quality; ignored for PNG.
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
-            + ["-q:v", "2", out],
-            check=True,
-            timeout=DOWNLOAD_TIMEOUT,
-        )
+        convert_image(raw, out)
         paths.append(out)
     return paths
 
@@ -537,7 +573,21 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
             audio = os.path.join(outdir, "audio.mp3")
             with open(audio, "wb") as f:
                 f.write(c.get(music_url).content)
+    return render_slideshow(img_paths, audio, outdir)
 
+
+def render_slideshow(
+    img_paths: list[str], audio: str | None, outdir: str
+) -> tuple[str, dict]:
+    """Render images (and optional music) into a 1080x1920 mp4.
+
+    Each image is shown SLIDE_SECONDS. Return the path to the video and
+    a dict with its width, height and duration.
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError(
+            "ffmpeg is not installed, slideshows can't be rendered"
+        )
     # Each image becomes its own input, looped for SLIDE_SECONDS. Every
     # clip is scaled and padded to the same 1080x1920 frame and the
     # clips are joined with the concat filter. (The concat demuxer is
@@ -574,6 +624,156 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
     return out, {"width": 1080, "height": 1920, "duration": total}
 
 
+def probe_video(path: str) -> dict:
+    """Return the width, height and duration of a video via ffprobe.
+
+    Telegram shows a video with wrong proportions without them. An
+    empty dict is returned if ffprobe is missing or fails.
+    """
+    if not shutil.which("ffprobe"):
+        return {}
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0"]
+            + ["-show_entries", "stream=width,height:format=duration"]
+            + ["-of", "json", path],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+        data = json.loads(out)
+        stream = (data.get("streams") or [{}])[0]
+        return {
+            "width": stream.get("width"),
+            "height": stream.get("height"),
+            # Telegram wants whole seconds.
+            "duration": round(float(data["format"]["duration"])),
+        }
+    except Exception:
+        logging.warning("couldn't probe %s", path)
+        return {}
+
+
+def parse_gallery_dl(data: list) -> list[dict]:
+    """Turn gallery-dl's JSON output (-j) into a list of post files.
+
+    Each file is {"url", "video"}; the order is the carousel order.
+    """
+    files = []
+    for message in data:
+        if message and message[0] == -1:  # an error
+            info = message[-1] if isinstance(message[-1], dict) else {}
+            raise RuntimeError(f"gallery-dl: {info.get('message', info)}")
+        if len(message) >= 3 and message[0] == 3:  # a file
+            url, meta = message[1], message[2]
+            is_video = bool(meta.get("video_url"))
+            # A "ytdl:" pseudo URL can't be fetched directly; the real
+            # video URL is in the metadata.
+            if url.startswith("ytdl:"):
+                url = meta.get("video_url") or url
+            files.append({"url": url, "video": is_video})
+    if not files:
+        raise RuntimeError("gallery-dl found no files in the post")
+    return files
+
+
+def instagram_files(url: str) -> list[dict]:
+    """List the photos and videos of an Instagram post with gallery-dl.
+
+    The result is cached, so a post is only listed once.
+    """
+    if url in instagram_posts:
+        return instagram_posts[url]
+    cmd = [sys.executable, "-m", "gallery_dl", "--dump-json"]
+    # "merged": plain mp4 video URLs instead of DASH manifests.
+    cmd += ["-o", "videos=merged"]
+    cookiefile = cookies_for("instagram")
+    if cookiefile:
+        cmd += ["--cookies", cookiefile]
+    result = subprocess.run(
+        [*cmd, url],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=DOWNLOAD_TIMEOUT,
+    )
+    try:
+        data = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"gallery-dl failed: {result.stderr.strip()[-300:]}"
+        ) from e
+    instagram_posts[url] = parse_gallery_dl(data)
+    return instagram_posts[url]
+
+
+def fetch_file(c: httpx.Client, url: str, path: str):
+    """Download a file, refusing anything above the Bot API limit."""
+    size = 0
+    with c.stream("GET", url) as response:
+        response.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in response.iter_bytes():
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    raise TooBigError("file is larger than 50 MB")
+                f.write(chunk)
+
+
+def download_instagram_post(url: str, outdir: str) -> list[tuple[str, str]]:
+    """Download all files of an Instagram post, in carousel order.
+
+    Return a list of (kind, path), kind is "photo" or "video". Photos
+    are converted to JPEG (Instagram also serves webp and heic).
+    """
+    items = []
+    with _http() as c:
+        for i, file in enumerate(instagram_files(url)):
+            if file["video"]:
+                path = os.path.join(outdir, f"{i:03}.mp4")
+                fetch_file(c, file["url"], path)
+                items.append(("video", path))
+            else:
+                raw = os.path.join(outdir, f"{i:03}.raw")
+                fetch_file(c, file["url"], raw)
+                path = os.path.join(outdir, f"{i:03}.jpg")
+                convert_image(raw, path)
+                items.append(("photo", path))
+    return items
+
+
+def download_instagram_single(url: str, outdir: str) -> tuple[str, dict]:
+    """Turn an Instagram post into one video, for inline mode.
+
+    An inline message holds only one media item: the first video of
+    the post is used, and a post of photos only becomes a slideshow.
+    """
+    files = instagram_files(url)
+    with _http() as c:
+        for file in files:
+            if file["video"]:
+                path = os.path.join(outdir, "video.mp4")
+                fetch_file(c, file["url"], path)
+                return path, probe_video(path)
+        img_paths = []
+        for i, file in enumerate(files):
+            raw = os.path.join(outdir, f"{i:03}.raw")
+            fetch_file(c, file["url"], raw)
+            # PNG for the slideshow renderer, like TikTok slideshows.
+            png = os.path.join(outdir, f"{i:03}.png")
+            convert_image(raw, png)
+            img_paths.append(png)
+    return render_slideshow(img_paths, None, outdir)
+
+
+def download_album(url: str, outdir: str) -> list[tuple[str, str]]:
+    """Download the items of an album link as a list of (kind, path)."""
+    if is_instagram_post(url):
+        return download_instagram_post(url, outdir)
+    return [("photo", p) for p in download_slideshow_images(url, outdir)]
+
+
 def download(url: str, outdir: str) -> tuple[str, dict]:
     """Download a video from any supported platform into outdir.
 
@@ -582,6 +782,8 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
     platform = platform_of(url)
     if platform == "tiktok":
         return download_tiktok(url, outdir)
+    if is_instagram_post(url):
+        return download_instagram_single(url, outdir)
     return download_generic(url, outdir, platform)
 
 
@@ -708,11 +910,86 @@ def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
     return parts
 
 
-async def get_album_ids(bot: Bot, url: str) -> list[str]:
-    """Return Telegram file_ids for the photos of a slideshow.
+def album_input(
+    kind: str, media: str | FSInputFile, caption: str | None = None, **extra
+) -> InputMediaPhoto | InputMediaVideo:
+    """Build one album item: a photo or a video.
 
-    On a cache miss, download the images and upload them to the
-    storage channel first.
+    `media` is a file to upload or a file_id. parse_mode=None: the
+    caption is a URL, and "&" in it would break HTML parsing.
+    """
+    if kind == "video":
+        return InputMediaVideo(
+            media=media,
+            caption=caption,
+            parse_mode=None,
+            supports_streaming=True,
+            **extra,
+        )
+    return InputMediaPhoto(media=media, caption=caption, parse_mode=None)
+
+
+def sent_item(msg: Message) -> tuple[str, str] | None:
+    """Return (kind, file_id) of a sent photo or video message."""
+    if msg.photo:
+        # The last PhotoSize is the largest one.
+        return "photo", msg.photo[-1].file_id
+    if msg.video:
+        return "video", msg.video.file_id
+    return None
+
+
+async def upload_album_part(
+    bot: Bot, part: list[tuple[str, str]], caption: str
+) -> list[Message]:
+    """Upload up to 10 files to the storage channel.
+
+    Telegram albums need at least 2 items, so a single file is sent as
+    a plain photo or video instead.
+    """
+    common = {
+        "disable_notification": True,
+        "request_timeout": UPLOAD_TIMEOUT,
+    }
+    if len(part) == 1:
+        kind, path = part[0]
+        if kind == "video":
+            msg = await bot.send_video(
+                STORAGE_CHAT_ID,
+                FSInputFile(path),
+                caption=caption,
+                parse_mode=None,
+                supports_streaming=True,
+                **probe_video(path),
+                **common,
+            )
+        else:
+            msg = await bot.send_photo(
+                STORAGE_CHAT_ID,
+                FSInputFile(path),
+                caption=caption,
+                parse_mode=None,
+                **common,
+            )
+        return [msg]
+    # A caption on the first item is shown under the whole album.
+    media = [
+        album_input(
+            kind,
+            FSInputFile(path),
+            caption if i == 0 else None,
+            **(probe_video(path) if kind == "video" else {}),
+        )
+        for i, (kind, path) in enumerate(part)
+    ]
+    return await bot.send_media_group(STORAGE_CHAT_ID, media, **common)
+
+
+async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
+    """Return (kind, file_id) for every photo and video of an album.
+
+    On a cache miss, download the files and upload them to the storage
+    channel first.
     """
     if url in album_cache:
         return album_cache[url]
@@ -720,32 +997,17 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
     async with lock:
         if url in album_cache:
             return album_cache[url]
-        file_ids = []
+        items = []
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            paths = await run_with_timeout(download_slideshow_images, url, tmp)
-            for part in chunks(paths):
-                # A caption on the first item is shown under the whole
-                # album. parse_mode=None: URLs may contain "&".
-                media = [
-                    InputMediaPhoto(
-                        media=FSInputFile(p),
-                        caption=url if i == 0 else None,
-                        parse_mode=None,
-                    )
-                    for i, p in enumerate(part)
-                ]
-                sent = await bot.send_media_group(
-                    STORAGE_CHAT_ID,
-                    media,
-                    disable_notification=True,
-                    request_timeout=UPLOAD_TIMEOUT,
-                )
-                # The last PhotoSize is the largest one.
-                file_ids += [m.photo[-1].file_id for m in sent if m.photo]
-        if not file_ids:
-            raise RuntimeError("Telegram didn't return the uploaded photos")
-        album_cache[url] = file_ids
-        return file_ids
+            files = await run_with_timeout(download_album, url, tmp)
+            for part in chunks(files):
+                for msg in await upload_album_part(bot, part, url):
+                    if item := sent_item(msg):
+                        items.append(item)
+        if not items:
+            raise RuntimeError("Telegram didn't return the uploaded files")
+        album_cache[url] = items
+        return items
 
 
 def is_silent(chat: Chat) -> bool:
@@ -760,17 +1022,26 @@ def is_silent(chat: Chat) -> bool:
 async def reply_with_media(bot: Bot, msg: Message, url: str):
     """Reply to a message with the media behind a link.
 
-    Slideshows come as photo albums (without sound), everything else
-    as a video. In groups the reply comes without a notification.
+    TikTok slideshows and Instagram posts come as albums (photos and
+    videos, up to 10 per album), everything else as a video. In groups
+    the reply comes without a notification.
     """
     silent = is_silent(msg.chat)
-    if await asyncio.to_thread(is_slideshow, url):
-        for part in chunks(await get_album_ids(bot, url)):
+    if await asyncio.to_thread(is_album, url):
+        for part in chunks(await get_album_items(bot, url)):
             if len(part) == 1:
-                await msg.reply_photo(part[0], disable_notification=silent)
+                kind, file_id = part[0]
+                if kind == "video":
+                    await msg.reply_video(
+                        file_id,
+                        supports_streaming=True,
+                        disable_notification=silent,
+                    )
+                else:
+                    await msg.reply_photo(file_id, disable_notification=silent)
             else:
                 await msg.reply_media_group(
-                    [InputMediaPhoto(media=file_id) for file_id in part],
+                    [album_input(kind, file_id) for kind, file_id in part],
                     disable_notification=silent,
                 )
         return
@@ -964,6 +1235,60 @@ async def on_group_language_chosen(c: CallbackQuery, bot: Bot):
     await c.answer()
 
 
+@router.message(Command("notices"), group)
+async def on_group_notices(msg: Message, bot: Bot):
+    """Ask admins whether to post restart and shutdown notices."""
+    lang = group_lang(msg.chat.id, msg.from_user)
+    if not await is_admin_message(bot, msg):
+        reply = await msg.reply(
+            t(lang, "admins_only"), disable_notification=True
+        )
+        delete_later(bot, reply.chat.id, reply.message_id)
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t(lang, "notices_on_button"),
+                    callback_data="gnotices:on",
+                ),
+                InlineKeyboardButton(
+                    text=t(lang, "notices_off_button"),
+                    callback_data="gnotices:off",
+                ),
+            ]
+        ]
+    )
+    if notices_enabled(msg.chat.id):
+        current = "notices_now_on"
+    else:
+        current = "notices_now_off"
+    await msg.reply(
+        t(lang, "choose_notices") + "\n" + t(lang, current),
+        reply_markup=kb,
+        disable_notification=True,
+    )
+
+
+@router.callback_query(F.data.startswith("gnotices:"))
+async def on_group_notices_chosen(c: CallbackQuery, bot: Bot):
+    """Save the notices setting if an admin pressed the button."""
+    choice = (c.data or "").split(":", 1)[-1]
+    if choice not in ("on", "off") or not isinstance(c.message, Message):
+        await c.answer()
+        return
+    chat_id = c.message.chat.id
+    # Anyone in the group can press the buttons, so check again.
+    if not await is_group_admin(bot, chat_id, c.from_user):
+        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
+        return
+    set_chat_setting(chat_id, "notices", choice == "on")
+    lang = group_lang(chat_id, c.from_user)
+    key = "notices_set_on" if choice == "on" else "notices_set_off"
+    await c.message.edit_text(t(lang, key))
+    await c.answer()
+
+
 @router.my_chat_member(
     group,
     ChatMemberUpdatedFilter(member_status_changed=JOIN_TRANSITION),
@@ -1091,6 +1416,8 @@ async def post_restart_notices(bot: Bot, key: str = "restarting"):
     message ids are saved so the next run can delete them.
     """
     for chat_id, lang in list(state["groups"].items()):
+        if not notices_enabled(chat_id):
+            continue
         try:
             msg = await bot.send_message(
                 int(chat_id), t(lang, key), disable_notification=True
@@ -1137,13 +1464,17 @@ async def setup_bot_profile(bot: Bot):
             ),
         ]
         await bot.set_my_commands(commands, language_code=lang_code)
-        # In groups only /language makes sense.
+        # In groups only the admin settings make sense.
         await bot.set_my_commands(
             [
                 BotCommand(
                     command="language",
                     description=t(code, "cmd_group_language"),
-                )
+                ),
+                BotCommand(
+                    command="notices",
+                    description=t(code, "cmd_group_notices"),
+                ),
             ],
             scope=BotCommandScopeAllGroupChats(),
             language_code=lang_code,
@@ -1206,10 +1537,10 @@ async def on_shutdown(bot: Bot):
     A restart takes only a few seconds, so the profile status is left
     as it is instead of flickering to offline and back.
     """
-    if stop_mode == "restart":
-        await post_restart_notices(bot, "restarting")
-    else:
-        await post_restart_notices(bot, "shutting_down")
+    if not quiet_stop:
+        key = "restarting" if stop_mode == "restart" else "shutting_down"
+        await post_restart_notices(bot, key)
+    if stop_mode != "restart":
         await set_profile_status(bot, online=False)
 
 
@@ -1222,23 +1553,37 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
     """
 
     def worker():
-        """Wait for commands until "stop", "restart" or end of input."""
-        global stop_mode
+        """Wait for commands until "stop", "restart" or end of input.
+
+        Adding "quiet" ("stop quiet", "restart quiet") skips the
+        messages in groups.
+        """
+        global stop_mode, quiet_stop
         while True:
             try:
-                cmd = input().strip().lower()
+                words = input().strip().lower().split()
             except (EOFError, KeyboardInterrupt):
                 # No interactive terminal (e.g. running as a service).
                 return
-            if cmd in ("stop", "exit", "quit", "restart"):
+            if not words:
+                continue
+            cmd, flags = words[0], set(words[1:])
+            if cmd in ("stop", "exit", "quit", "restart") and flags <= {
+                "quiet"
+            }:
                 stop_mode = "restart" if cmd == "restart" else "shutdown"
+                quiet_stop = "quiet" in flags
                 logging.info(
-                    "%s...", "restarting" if cmd == "restart" else "stopping"
+                    "%s%s...",
+                    "restarting" if cmd == "restart" else "stopping",
+                    " quietly" if quiet_stop else "",
                 )
                 asyncio.run_coroutine_threadsafe(dp.stop_polling(), loop)
                 return
-            if cmd:
-                print("Unknown command. Available: stop, restart")
+            print(
+                "Unknown command. Available: stop, restart "
+                "(add 'quiet' to skip group messages)"
+            )
 
     threading.Thread(target=worker, daemon=True).start()
 

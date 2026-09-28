@@ -1,6 +1,6 @@
 # pastemedia-bot
 
-Telegram bot that downloads short videos: **TikTok** without watermark, **YouTube Shorts** and **Instagram Reels**.
+Telegram bot that downloads short videos and posts: **TikTok** without watermark, **YouTube Shorts**, **Instagram** Reels and posts.
 
 > [!WARNING]
 > **This project is vibe-coded.** It was written with heavy help from AI and hasn't been
@@ -8,7 +8,7 @@ Telegram bot that downloads short videos: **TikTok** without watermark, **YouTub
 > Use at your own risk, and read the code before running it anywhere important.
 
 > [!NOTE]
-> **Instagram downloads don't work yet.** Instagram blocks downloads without a logged-in account. TikTok and YouTube Shorts work normally.
+> **Instagram needs cookies** from a logged-in account, and YouTube may ask for them too — see [Cookies](#cookies-optional-for-instagram--youtube).
 
 Type in any chat:
 
@@ -24,9 +24,9 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 |---|---|---|
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
-| Instagram | Reels and video posts | ❌ not working yet (Instagram blocks anonymous downloads) |
+| Instagram | Reels, posts and carousels (photos + videos, sent as albums) | ⚠️ needs cookies from a logged-in account |
 
-**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. In groups, admins can set one language for the whole group with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
+**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. In groups, admins can set one language for the whole group with `/language`, and turn restart/shutdown messages on or off with `/notices`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
 
 ## How it works
 
@@ -35,7 +35,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 3. The video is uploaded to a private "storage" channel to obtain a `file_id`.
 4. The placeholder is edited into the video. Repeated links are served instantly from cache.
 
-TikTok photo slideshows are sent as photo albums (up to 10 per album, without sound) in private chats and groups. In inline mode they are rendered into a video with the original music, since an inline message can hold only one media item.
+TikTok photo slideshows and Instagram carousels are sent as albums (up to 10 items per album) in private chats and groups; Instagram albums can mix photos and videos. In inline mode, where a message can hold only one media item, TikTok slideshows become a video with the original music, and Instagram posts send their first video, or a slideshow video if the post has only photos. Instagram posts are listed and downloaded with [gallery-dl](https://github.com/mikf/gallery-dl).
 
 ## Setup
 
@@ -57,10 +57,15 @@ cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
 python bot.py
 ```
 
+On Windows you can just double-click **`start.bat`**: it creates `.venv`, installs dependencies on the first run and starts the bot. `start.bat update` also updates dependencies (e.g. yt-dlp) before starting.
+
 Commands in the terminal where the bot runs:
 
 - `stop` (or Ctrl+C) — shut the bot down; groups get "🌙 The bot is off for now, back later" and the profile shows 🔴 Offline
 - `restart` — restart the bot with the latest code; groups get "🔄 The bot is restarting", and the bot starts again by itself a few seconds later
+- add `quiet` (`stop quiet`, `restart quiet`) to skip the messages in groups, e.g. while testing
+
+Group admins can turn these messages off for their group with `/notices`.
 
 Use these instead of closing the window or the PyCharm Stop button: those kill the bot before it can post notices or update its status.
 
