@@ -270,6 +270,85 @@ def resolve_url(url: str) -> str:
         return str(c.get(url).url)
 
 
+def _page_json(html: str) -> list[dict]:
+    """Extract the JSON data blobs embedded in a TikTok page.
+
+    TikTok has used several formats over time, so all known ones are
+    collected.
+    """
+    blobs = []
+    for script_id in (
+        "__UNIVERSAL_DATA_FOR_REHYDRATION__",
+        "SIGI_STATE",
+        "__NEXT_DATA__",
+    ):
+        m = re.search(
+            rf'<script[^>]*id="{script_id}"[^>]*>(.*?)</script>', html, re.S
+        )
+        if m:
+            try:
+                blobs.append(json.loads(m.group(1)))
+            except json.JSONDecodeError:
+                logging.warning("couldn't parse %s JSON", script_id)
+    return blobs
+
+
+def _find_slideshows(obj: Any) -> list[dict]:
+    """Find every post with slideshow images anywhere in the JSON.
+
+    Searching the whole tree instead of a fixed path survives TikTok
+    moving the data under a different key.
+    """
+    found = []
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            images = (node.get("imagePost") or {}).get("images")
+            if isinstance(images, list) and images:
+                found.append(node)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
+
+
+def _fetch_slideshow_item(c: httpx.Client, url: str) -> dict:
+    """Return the post data of a TikTok photo slideshow.
+
+    Try the /photo/ page first, then the same post as /video/: TikTok
+    often serves slideshow data on the video page in the older format.
+    The page may also list related posts, so the one whose id matches
+    the link wins.
+    """
+    m = re.search(r"/(?:photo|video)/(\d+)", url)
+    post_id = m.group(1) if m else None
+    candidates = [url]
+    if "/photo/" in url:
+        candidates.append(url.replace("/photo/", "/video/", 1))
+
+    seen_keys = []
+    for page_url in candidates:
+        for blob in _page_json(c.get(page_url).text):
+            scope = blob.get("__DEFAULT_SCOPE__", blob)
+            if isinstance(scope, dict):
+                seen_keys.extend(scope.keys())
+            posts = _find_slideshows(blob)
+            for post in posts:
+                if post_id is None or str(post.get("id")) == post_id:
+                    return post
+            if posts and post_id is None:
+                return posts[0]
+
+    # Log what the page did contain, so the next fix is quick.
+    logging.warning(
+        "no slideshow data for %s; page keys: %s",
+        url,
+        sorted(set(map(str, seen_keys))),
+    )
+    raise RuntimeError("couldn't find slideshow data on the page")
+
+
 def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
     """Render a TikTok photo slideshow into an mp4 with music.
 
@@ -282,24 +361,8 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
         )
 
     with _http() as c:
-        html = c.get(url).text
-        m = re.search(
-            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>'
-            r"(.*?)</script>",
-            html,
-            re.S,
-        )
-        if not m:
-            raise RuntimeError("couldn't find post data on the page")
-        data = json.loads(m.group(1))
-        try:
-            scope = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]
-            item = scope["itemInfo"]["itemStruct"]
-            images = item["imagePost"]["images"]
-        except (KeyError, TypeError) as e:
-            raise RuntimeError(
-                "unexpected page structure (TikTok changed something)"
-            ) from e
+        item = _fetch_slideshow_item(c, url)
+        images = item["imagePost"]["images"]
 
         # Download the images and normalize them to PNG: TikTok mixes
         # jpeg and webp, and ffmpeg's concat demuxer can't handle
