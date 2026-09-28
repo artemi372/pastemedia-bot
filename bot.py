@@ -58,6 +58,7 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllGroupChats,
     CallbackQuery,
+    Chat,
     ChatMemberUpdated,
     ChosenInlineResult,
     FSInputFile,
@@ -680,6 +681,7 @@ async def get_file_id(bot: Bot, url: str) -> str:
                 caption=url,
                 # URLs may contain "&", which would break HTML parsing.
                 parse_mode=None,
+                disable_notification=True,
                 request_timeout=UPLOAD_TIMEOUT,
             )
         if msg.video is None:
@@ -690,7 +692,7 @@ async def get_file_id(bot: Bot, url: str) -> str:
 
 def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
     """Split a list into parts of at most `size` items."""
-    return [items[i: i + size] for i in range(0, len(items), size)]
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 async def get_album_ids(bot: Bot, url: str) -> list[str]:
@@ -720,7 +722,10 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
                     for i, p in enumerate(part)
                 ]
                 sent = await bot.send_media_group(
-                    STORAGE_CHAT_ID, media, request_timeout=UPLOAD_TIMEOUT
+                    STORAGE_CHAT_ID,
+                    media,
+                    disable_notification=True,
+                    request_timeout=UPLOAD_TIMEOUT,
                 )
                 # The last PhotoSize is the largest one.
                 file_ids += [m.photo[-1].file_id for m in sent if m.photo]
@@ -730,23 +735,36 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
         return file_ids
 
 
+def is_silent(chat: Chat) -> bool:
+    """Tell whether messages to a chat should come without a sound.
+
+    Groups get silent messages so the bot doesn't buzz everyone's
+    phone; in private chats the user is waiting, so a sound helps.
+    """
+    return chat.type != ChatType.PRIVATE
+
+
 async def reply_with_media(bot: Bot, msg: Message, url: str):
     """Reply to a message with the media behind a link.
 
     Slideshows come as photo albums (without sound), everything else
-    as a video.
+    as a video. In groups the reply comes without a notification.
     """
+    silent = is_silent(msg.chat)
     if await asyncio.to_thread(is_slideshow, url):
         for part in chunks(await get_album_ids(bot, url)):
             if len(part) == 1:
-                await msg.reply_photo(part[0])
+                await msg.reply_photo(part[0], disable_notification=silent)
             else:
                 await msg.reply_media_group(
-                    [InputMediaPhoto(media=file_id) for file_id in part]
+                    [InputMediaPhoto(media=file_id) for file_id in part],
+                    disable_notification=silent,
                 )
         return
     file_id = await get_file_id(bot, url)
-    await msg.reply_video(file_id, supports_streaming=True)
+    await msg.reply_video(
+        file_id, supports_streaming=True, disable_notification=silent
+    )
 
 
 # ---------- handlers: private chat ----------
@@ -865,7 +883,7 @@ async def on_group_link(msg: Message, bot: Bot):
     except Exception as e:
         logging.exception("download failed: %s", url)
         lang = group_lang(msg.chat.id, msg.from_user)
-        error = await msg.reply(error_text(lang, e))
+        error = await msg.reply(error_text(lang, e), disable_notification=True)
         delete_later(bot, error.chat.id, error.message_id)
 
 
@@ -895,7 +913,9 @@ async def on_group_language(msg: Message, bot: Bot):
     """Show the group language picker to admins."""
     lang = group_lang(msg.chat.id, msg.from_user)
     if not await is_admin_message(bot, msg):
-        reply = await msg.reply(t(lang, "admins_only"))
+        reply = await msg.reply(
+            t(lang, "admins_only"), disable_notification=True
+        )
         delete_later(bot, reply.chat.id, reply.message_id)
         return
     kb = InlineKeyboardMarkup(
@@ -904,7 +924,11 @@ async def on_group_language(msg: Message, bot: Bot):
             for code, name in LANG_NAMES.items()
         ]
     )
-    await msg.reply(t(lang, "choose_group_lang"), reply_markup=kb)
+    await msg.reply(
+        t(lang, "choose_group_lang"),
+        reply_markup=kb,
+        disable_notification=True,
+    )
 
 
 @router.callback_query(F.data.startswith("glang:"))
@@ -946,7 +970,7 @@ async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
     text = t(lang, "group_hello") + t(lang, "group_lang_hint")
     if not me.can_read_all_group_messages and not is_admin:
         text += t(lang, "group_need_access")
-    await bot.send_message(event.chat.id, text)
+    await bot.send_message(event.chat.id, text, disable_notification=True)
 
 
 @router.my_chat_member(
@@ -1054,7 +1078,9 @@ async def post_restart_notices(bot: Bot):
     """
     for chat_id, lang in list(state["groups"].items()):
         try:
-            msg = await bot.send_message(int(chat_id), t(lang, "restarting"))
+            msg = await bot.send_message(
+                int(chat_id), t(lang, "restarting"), disable_notification=True
+            )
             state["restart_notices"][chat_id] = msg.message_id
         except (TelegramForbiddenError, TelegramBadRequest) as e:
             # Kicked, group deleted, or no right to write: no point
