@@ -49,6 +49,13 @@ TEXTS = {
         "lang_set": "✅ Language: English",
         "cmd_start": "Start / help",
         "cmd_language": "Change language",
+        "admins_only": "Only group admins can change the language.",
+        "choose_group_lang": "Choose the language for this group:",
+        "group_lang_set": "✅ Group language: English",
+        "cmd_group_language": "Change the group language (admins)",
+        "group_lang_hint": "\n\nAdmins can change my language with /language.",
+        "status_online": "🟢 Online",
+        "status_offline": "🔴 Offline",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -112,6 +119,15 @@ TEXTS = {
         "lang_set": "✅ Язык: русский",
         "cmd_start": "Старт / помощь",
         "cmd_language": "Сменить язык",
+        "admins_only": "Менять язык могут только админы группы.",
+        "choose_group_lang": "Выберите язык для этой группы:",
+        "group_lang_set": "✅ Язык группы: русский",
+        "cmd_group_language": "Сменить язык группы (админы)",
+        "group_lang_hint": (
+            "\n\nАдмины могут сменить мой язык командой /language."
+        ),
+        "status_online": "🟢 Работает",
+        "status_offline": "🔴 Выключен",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -174,6 +190,15 @@ TEXTS = {
         "lang_set": "✅ Keel: eesti",
         "cmd_start": "Alusta / abi",
         "cmd_language": "Muuda keelt",
+        "admins_only": "Keelt saavad muuta ainult grupi administraatorid.",
+        "choose_group_lang": "Vali selle grupi keel:",
+        "group_lang_set": "✅ Grupi keel: eesti",
+        "cmd_group_language": "Muuda grupi keelt (adminid)",
+        "group_lang_hint": (
+            "\n\nAdminid saavad minu keelt muuta käsuga /language."
+        ),
+        "status_online": "🟢 Töötab",
+        "status_offline": "🔴 Väljas",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "

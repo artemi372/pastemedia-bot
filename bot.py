@@ -51,6 +51,7 @@ from aiogram.filters import (
 )
 from aiogram.types import (
     BotCommand,
+    BotCommandScopeAllGroupChats,
     CallbackQuery,
     ChatMemberUpdated,
     ChosenInlineResult,
@@ -80,6 +81,7 @@ STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
+ERROR_TTL = 15  # seconds before error messages are deleted
 SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -131,12 +133,16 @@ album_cache: dict[str, list[str]] = {}
 resolved: dict[str, str] = {}
 # Prevents downloading the same link twice in parallel.
 locks: dict[str, asyncio.Lock] = {}
+# Running delayed deletions (kept so they aren't garbage-collected).
+background_tasks: set[asyncio.Task] = set()
 # Saved to STATE_FILE:
 #   users: str(user_id) -> per-user settings, e.g. {"lang": "et"}
+#   chats: str(chat_id) -> per-group settings set by admins
 #   groups: str(chat_id) -> language of the group
 #   restart_notices: str(chat_id) -> message_id of the notice
 state: dict[str, dict[str, Any]] = {
     "users": {},
+    "chats": {},
     "groups": {},
     "restart_notices": {},
 }
@@ -191,6 +197,12 @@ def set_user_setting(user_id: int, key: str, value: Any):
     save_state()
 
 
+def set_chat_setting(chat_id: int, key: str, value: Any):
+    """Save one setting of a group to the persistent state."""
+    state["chats"].setdefault(str(chat_id), {})[key] = value
+    save_state()
+
+
 def forget_group(chat_id: int):
     """Remove a group from the persistent list."""
     if state["groups"].pop(str(chat_id), None) is not None:
@@ -210,6 +222,32 @@ def lang_of(user: User | None) -> str:
         return DEFAULT_LANG
     saved = user_settings(user.id).get("lang")
     return saved if saved in TEXTS else detect_lang(user.language_code)
+
+
+def group_lang(chat_id: int, user: User | None) -> str:
+    """Return the language to talk in inside a group.
+
+    A language set by the group admins wins; otherwise the language of
+    the user the bot is answering is used.
+    """
+    saved = state["chats"].get(str(chat_id), {}).get("lang")
+    return saved if saved in TEXTS else lang_of(user)
+
+
+def delete_later(bot: Bot, chat_id: int, message_id: int):
+    """Delete a message after ERROR_TTL seconds, in the background."""
+
+    async def worker():
+        """Wait, then delete; the message may already be gone."""
+        await asyncio.sleep(ERROR_TTL)
+        try:
+            await bot.delete_message(chat_id, message_id)
+        except Exception as e:
+            logging.warning("couldn't delete message %s: %s", message_id, e)
+
+    task = asyncio.create_task(worker())
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
 
 
 def error_text(lang: str, e: Exception) -> str:
@@ -600,7 +638,16 @@ async def get_album_ids(bot: Bot, url: str) -> list[str]:
                 download_slideshow_images, url, tmp
             )
             for part in chunks(paths):
-                media = [InputMediaPhoto(media=FSInputFile(p)) for p in part]
+                # A caption on the first item is shown under the whole
+                # album. parse_mode=None: URLs may contain "&".
+                media = [
+                    InputMediaPhoto(
+                        media=FSInputFile(p),
+                        caption=url if i == 0 else None,
+                        parse_mode=None,
+                    )
+                    for i, p in enumerate(part)
+                ]
                 sent = await bot.send_media_group(STORAGE_CHAT_ID, media)
                 # The last PhotoSize is the largest one.
                 file_ids += [m.photo[-1].file_id for m in sent if m.photo]
@@ -688,6 +735,7 @@ async def on_link(msg: Message, bot: Bot):
     except Exception as e:
         logging.exception("download failed: %s", url)
         await status.edit_text(error_text(lang, e))
+        delete_later(bot, status.chat.id, status.message_id)
         return
     # The video is already sent, so failing to clean up isn't an error.
     try:
@@ -741,7 +789,67 @@ async def on_group_link(msg: Message, bot: Bot):
             await reply_with_media(bot, msg, url)
     except Exception as e:
         logging.exception("download failed: %s", url)
-        await msg.reply(error_text(lang_of(msg.from_user), e))
+        lang = group_lang(msg.chat.id, msg.from_user)
+        error = await msg.reply(error_text(lang, e))
+        delete_later(bot, error.chat.id, error.message_id)
+
+
+async def is_group_admin(bot: Bot, chat_id: int, user: User | None) -> bool:
+    """Check whether a user is an owner or admin of a group."""
+    if user is None:
+        return False
+    member = await bot.get_chat_member(chat_id, user.id)
+    return member.status in (
+        ChatMemberStatus.CREATOR,
+        ChatMemberStatus.ADMINISTRATOR,
+    )
+
+
+async def is_admin_message(bot: Bot, msg: Message) -> bool:
+    """Check whether a group message comes from an admin.
+
+    Anonymous admins post on behalf of the group itself.
+    """
+    if msg.sender_chat is not None and msg.sender_chat.id == msg.chat.id:
+        return True
+    return await is_group_admin(bot, msg.chat.id, msg.from_user)
+
+
+@router.message(Command("language"), group)
+async def on_group_language(msg: Message, bot: Bot):
+    """Show the group language picker to admins."""
+    lang = group_lang(msg.chat.id, msg.from_user)
+    if not await is_admin_message(bot, msg):
+        reply = await msg.reply(t(lang, "admins_only"))
+        delete_later(bot, reply.chat.id, reply.message_id)
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"glang:{code}")]
+            for code, name in LANG_NAMES.items()
+        ]
+    )
+    await msg.reply(t(lang, "choose_group_lang"), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("glang:"))
+async def on_group_language_chosen(c: CallbackQuery, bot: Bot):
+    """Save the group language if an admin pressed the button."""
+    code = (c.data or "").split(":", 1)[-1]
+    if code not in TEXTS or not isinstance(c.message, Message):
+        await c.answer()
+        return
+    chat_id = c.message.chat.id
+    # Anyone in the group can press the buttons, so check again.
+    if not await is_group_admin(bot, chat_id, c.from_user):
+        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
+        return
+    set_chat_setting(chat_id, "lang", code)
+    # Restart notices use the group language too.
+    state["groups"][str(chat_id)] = code
+    save_state()
+    await c.message.edit_text(t(code, "group_lang_set"))
+    await c.answer()
 
 
 @router.my_chat_member(
@@ -753,13 +861,14 @@ async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
 
     Also warn if the bot can't see regular messages there.
     """
-    lang = lang_of(event.from_user)  # the person who added the bot
+    # The group language, or that of the person who added the bot.
+    lang = group_lang(event.chat.id, event.from_user)
     remember_group(event.chat.id, lang)
     # Fresh data, not bot.me(): privacy mode may have been changed
     # while the bot was running.
     me = await bot.get_me()
     is_admin = event.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR
-    text = t(lang, "group_hello")
+    text = t(lang, "group_hello") + t(lang, "group_lang_hint")
     if not me.can_read_all_group_messages and not is_admin:
         text += t(lang, "group_need_access")
     await bot.send_message(event.chat.id, text)
@@ -883,13 +992,12 @@ async def delete_restart_notices(bot: Bot):
 
 
 async def setup_bot_profile(bot: Bot):
-    """Set the command menu and profile texts in every language.
+    """Set the command menu in every language.
 
     Telegram shows the version matching the user's app language. The
     default language is registered without language_code, as a
     fallback for everyone else.
     """
-    me = await bot.me()
     for code in TEXTS:
         lang_code = None if code == DEFAULT_LANG else code
         commands = [
@@ -899,17 +1007,72 @@ async def setup_bot_profile(bot: Bot):
             ),
         ]
         await bot.set_my_commands(commands, language_code=lang_code)
-        # Shown in an empty chat before the user presses Start
-        # (max 512 characters).
-        await bot.set_my_description(
-            t(code, "bot_description", bot=me.username),
+        # In groups only /language makes sense.
+        await bot.set_my_commands(
+            [
+                BotCommand(
+                    command="language",
+                    description=t(code, "cmd_group_language"),
+                )
+            ],
+            scope=BotCommandScopeAllGroupChats(),
             language_code=lang_code,
         )
-        # Shown in the bot's profile and in share links
-        # (max 120 characters).
-        await bot.set_my_short_description(
-            t(code, "bot_short_description"), language_code=lang_code
-        )
+
+
+def fit(text: str, limit: int) -> str:
+    """Cut a text to a Telegram length limit, adding "..." if needed.
+
+    Telegram counts UTF-16 code units, so an emoji takes two.
+    """
+
+    def size(s: str) -> int:
+        return len(s.encode("utf-16-le")) // 2
+
+    if size(text) <= limit:
+        return text
+    while size(text + "…") > limit:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+async def set_profile_status(bot: Bot, online: bool):
+    """Show whether the bot is running in its profile texts.
+
+    The status goes in front of the short description (bot profile,
+    share links) and the description (empty chat before Start). A hard
+    crash skips the update, so the profile may still say "online".
+    Errors are only logged: a failed update must never stop the bot.
+    """
+    status_key = "status_online" if online else "status_offline"
+    try:
+        me = await bot.me()
+        for code in TEXTS:
+            lang_code = None if code == DEFAULT_LANG else code
+            status = t(code, status_key)
+            description = t(code, "bot_description", bot=me.username)
+            await bot.set_my_description(
+                fit(status + "\n\n" + description, 512),
+                language_code=lang_code,
+            )
+            short = t(code, "bot_short_description")
+            await bot.set_my_short_description(
+                fit(status + " · " + short, 120), language_code=lang_code
+            )
+    except Exception:
+        logging.exception("couldn't update the profile status")
+
+
+async def on_startup(bot: Bot):
+    """Clean up after the previous run and show the bot as online."""
+    await delete_restart_notices(bot)
+    await set_profile_status(bot, online=True)
+
+
+async def on_shutdown(bot: Bot):
+    """Warn the groups and show the bot as offline."""
+    await post_restart_notices(bot)
+    await set_profile_status(bot, online=False)
 
 
 def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
@@ -946,9 +1109,9 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
     load_state()
-    dp.startup.register(delete_restart_notices)
+    dp.startup.register(on_startup)
     # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
-    dp.shutdown.register(post_restart_notices)
+    dp.shutdown.register(on_shutdown)
     print("Bot is running. Type 'stop' to shut it down.")
     start_console(dp, asyncio.get_running_loop())
     try:
