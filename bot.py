@@ -71,6 +71,7 @@ from aiogram.types import (
     InputMediaPhoto,
     InputMediaVideo,
     InputTextMessageContent,
+    LinkPreviewOptions,
     Message,
     User,
 )
@@ -86,6 +87,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # Private channel where the bot is an admin, id like -100...
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 
+REPO_URL = "https://github.com/artemi372/pastemedia-bot"
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 ERROR_TTL = 15  # seconds before error messages in groups are deleted
@@ -1066,7 +1068,15 @@ async def on_start(msg: Message, bot: Bot):
         text=t(lang, "try_button"), switch_inline_query=""
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[try_button]])
-    await msg.answer(t(lang, "start", bot=me.username), reply_markup=kb)
+    text = t(lang, "start", bot=me.username) + t(
+        lang, "source_line", repo=REPO_URL
+    )
+    # No big GitHub preview card under the greeting.
+    await msg.answer(
+        text,
+        reply_markup=kb,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
 
 
 @router.message(Command("language"), private)
@@ -1512,7 +1522,9 @@ async def set_profile_status(bot: Bot, online: bool):
         for code in TEXTS:
             lang_code = None if code == DEFAULT_LANG else code
             status = t(code, status_key)
-            description = t(code, "bot_description", bot=me.username)
+            description = t(code, "bot_description", bot=me.username) + t(
+                code, "source_line", repo=REPO_URL
+            )
             await bot.set_my_description(
                 fit(status + "\n\n" + description, 512),
                 language_code=lang_code,

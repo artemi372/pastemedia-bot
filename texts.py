@@ -70,6 +70,7 @@ TEXTS = {
         "notices_off_button": "🔕 No",
         "notices_set_on": ("🔔 Restart and shutdown notices are on."),
         "notices_set_off": ("🔕 Restart and shutdown notices are off."),
+        "source_line": "\n\n🧩 Open source: {repo}",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -162,6 +163,7 @@ TEXTS = {
         "notices_set_off": (
             "🔕 Уведомления о перезапуске и выключении выключены."
         ),
+        "source_line": "\n\n🧩 Исходный код: {repo}",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -253,6 +255,7 @@ TEXTS = {
         "notices_set_off": (
             "🔕 Taaskäivituse ja väljalülitamise teated on väljas."
         ),
+        "source_line": "\n\n🧩 Lähtekood: {repo}",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "
