@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 
 import httpx
 import yt_dlp
@@ -274,11 +275,38 @@ async def noop(c: CallbackQuery):
     await c.answer("Hang on, downloading 🙂")
 
 
+def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
+    """Read commands from the terminal in a daemon thread. Type 'stop' to shut the bot down.
+
+    A daemon thread is used so a blocked input() never keeps the process alive after Ctrl+C.
+    """
+    def worker():
+        while True:
+            try:
+                cmd = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return  # no interactive terminal (e.g. running as a service) — just ignore
+            if cmd in ("stop", "exit", "quit"):
+                logging.info("stopping bot...")
+                asyncio.run_coroutine_threadsafe(dp.stop_polling(), loop)
+                return
+            if cmd:
+                print("Unknown command. Available: stop")
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 async def main():
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
-    await dp.start_polling(bot, allowed_updates=["inline_query", "chosen_inline_result", "callback_query"])
+    print("Bot is running. Type 'stop' to shut it down.")
+    start_console(dp, asyncio.get_running_loop())
+    try:
+        await dp.start_polling(bot, allowed_updates=["inline_query", "chosen_inline_result", "callback_query"])
+    finally:
+        await bot.session.close()
+        logging.info("bot stopped")
 
 
 if __name__ == "__main__":
