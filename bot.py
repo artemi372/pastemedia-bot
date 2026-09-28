@@ -471,36 +471,40 @@ def make_slideshow(url: str, outdir: str) -> tuple[str, dict]:
             with open(audio, "wb") as f:
                 f.write(c.get(music_url).content)
 
-    # ffmpeg concat list: each image is shown SLIDE_SECONDS. The last
-    # one is listed twice, otherwise concat ignores its duration.
-    list_path = os.path.join(outdir, "list.txt")
-    with open(list_path, "w", encoding="utf-8") as f:
-        for p in img_paths:
-            f.write(f"file '{p}'\nduration {SLIDE_SECONDS}\n")
-        f.write(f"file '{img_paths[-1]}'\n")
-
-    out = os.path.join(outdir, "slideshow.mp4")
+    # Each image becomes its own input, looped for SLIDE_SECONDS. Every
+    # clip is scaled and padded to the same 1080x1920 frame and the
+    # clips are joined with the concat filter. (The concat demuxer is
+    # not used: with images of different sizes it shows only the last
+    # one.)
+    total = len(img_paths) * SLIDE_SECONDS
     cmd = ["ffmpeg", "-y", "-loglevel", "error"]
-    cmd += ["-f", "concat", "-safe", "0", "-i", list_path]
+    for p in img_paths:
+        cmd += ["-loop", "1", "-t", str(SLIDE_SECONDS), "-i", p]
     if audio:
         # Loop the music if the slides are longer than the track.
         cmd += ["-stream_loop", "-1", "-i", audio]
-    cmd += [
-        "-vf",
+
+    frame = (
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,"
-        "fps=30,format=yuv420p",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-    ]  # fmt: skip
+        "setsar=1,fps=30,format=yuv420p"
+    )
+    parts = [f"[{i}:v]{frame}[v{i}]" for i in range(len(img_paths))]
+    joined = "".join(f"[v{i}]" for i in range(len(img_paths)))
+    parts.append(f"{joined}concat=n={len(img_paths)}:v=1:a=0[video]")
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[video]"]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
     if audio:
-        cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
-    cmd += ["-movflags", "+faststart", out]
+        audio_input = len(img_paths)
+        cmd += ["-map", f"{audio_input}:a", "-c:a", "aac", "-b:a", "128k"]
+    # An explicit length: the looped music would otherwise never end.
+    out = os.path.join(outdir, "slideshow.mp4")
+    cmd += ["-t", str(total), "-movflags", "+faststart", out]
     subprocess.run(cmd, check=True)
 
     if os.path.getsize(out) > MAX_BYTES:
         raise TooBigError("rendered slideshow is larger than 50 MB")
-    duration = len(img_paths) * SLIDE_SECONDS
-    return out, {"width": 1080, "height": 1920, "duration": duration}
+    return out, {"width": 1080, "height": 1920, "duration": total}
 
 
 def download(url: str, outdir: str) -> tuple[str, dict]:
