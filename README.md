@@ -15,7 +15,7 @@ Type in any chat:
 
 pick the result — the bot replaces it with the clean video.
 
-You can also just send a link to the bot in a private chat.
+You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a TikTok link with the video.
 
 **Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
 
@@ -34,6 +34,7 @@ Photo slideshows are rendered into a video (images + original music) with ffmpeg
 2. `/setinline` — enable inline mode.
 3. `/setinlinefeedback` — set to **Enabled** (required, otherwise the placeholder never turns into a video).
 4. Create a private channel, add the bot as an admin, get its id (`-100...`).
+   - *(For groups)* `/setprivacy` → **Disable**, so the bot can see regular messages with links. Then remove and re-add the bot to existing groups, the change only applies after that. Alternatively, make the bot an admin in the group.
 5. Install [ffmpeg](https://ffmpeg.org/) (needed for slideshows): `winget install ffmpeg` on Windows, `apt install ffmpeg` on Debian/Ubuntu.
 6. Configure and run:
 

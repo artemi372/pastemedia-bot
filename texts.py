@@ -33,6 +33,11 @@ TEXTS = {
         "lang_set": "✅ Language: English",
         "cmd_start": "Start / help",
         "cmd_language": "Change language",
+        "group_hello": "👋 Hi! Post a TikTok link here and I'll reply with the video without watermark.",
+        "group_need_access": (
+            "\n\n⚠️ Right now I can't see regular messages. "
+            "Make me an admin, or ask the bot owner to disable privacy mode."
+        ),
     },
     "ru": {
         "start": (
@@ -55,6 +60,11 @@ TEXTS = {
         "lang_set": "✅ Язык: русский",
         "cmd_start": "Старт / помощь",
         "cmd_language": "Сменить язык",
+        "group_hello": "👋 Привет! Кидайте сюда ссылки на TikTok, я отвечу видео без вотермарки.",
+        "group_need_access": (
+            "\n\n⚠️ Сейчас я не вижу обычные сообщения. "
+            "Сделайте меня администратором или попросите владельца бота отключить privacy mode."
+        ),
     },
     "et": {
         "start": (
@@ -77,6 +87,11 @@ TEXTS = {
         "lang_set": "✅ Keel: eesti",
         "cmd_start": "Alusta / abi",
         "cmd_language": "Muuda keelt",
+        "group_hello": "👋 Tere! Saatke siia TikToki linke ja ma vastan videoga ilma vesimärgita.",
+        "group_need_access": (
+            "\n\n⚠️ Praegu ma ei näe tavalisi sõnumeid. "
+            "Tehke mind administraatoriks või paluge boti omanikul privacy mode välja lülitada."
+        ),
     },
 }
 

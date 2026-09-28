@@ -30,8 +30,9 @@ import yt_dlp
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ChatType, ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
+from aiogram.filters import JOIN_TRANSITION, ChatMemberUpdatedFilter, Command, CommandStart
+from aiogram.utils.chat_action import ChatActionSender
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
@@ -44,6 +45,7 @@ from aiogram.types import (
     InlineQueryResultCachedVideo,
     InputMediaVideo,
     InputTextMessageContent,
+    ChatMemberUpdated,
     Message,
     User,
 )
@@ -307,6 +309,47 @@ async def on_other(msg: Message):
     await msg.answer(t(lang_of(msg.from_user), "no_link"))
 
 
+# ---------- handlers: groups ----------
+
+group = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
+
+
+@router.message(
+    F.text.regexp(TT_RE, mode="search"),
+    group,
+    F.via_bot.is_(None),  # ignore messages sent through inline mode (they're already handled)
+)
+async def on_group_link(msg: Message, bot: Bot):
+    """A TikTok link posted in a group: reply to that message with the video.
+
+    No "Downloading…" text here to keep the chat clean; the "sending video…" status
+    at the top of the chat shows that the bot is working.
+    """
+    url = TT_RE.search(msg.text).group(0)
+    try:
+        async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
+            file_id = await get_file_id(bot, url)
+        await msg.reply_video(file_id, supports_streaming=True)
+    except Exception as e:
+        logging.exception("download failed: %s", url)
+        await msg.reply(error_text(lang_of(msg.from_user), e))
+
+
+@router.my_chat_member(
+    group,
+    ChatMemberUpdatedFilter(member_status_changed=JOIN_TRANSITION),
+)
+async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
+    """Say hi when added to a group, and warn if the bot can't see regular messages."""
+    lang = lang_of(event.from_user)  # the person who added the bot
+    me = await bot.get_me()  # fresh, not cached: privacy mode may have been changed while running
+    is_admin = event.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR
+    text = t(lang, "group_hello")
+    if not me.can_read_all_group_messages and not is_admin:
+        text += t(lang, "group_need_access")
+    await bot.send_message(event.chat.id, text)
+
+
 # ---------- handlers: inline mode ----------
 
 @router.inline_query()
@@ -414,7 +457,8 @@ async def main():
     try:
         await set_commands(bot)
         await dp.start_polling(
-            bot, allowed_updates=["message", "inline_query", "chosen_inline_result", "callback_query"]
+            bot,
+            allowed_updates=["message", "inline_query", "chosen_inline_result", "callback_query", "my_chat_member"],
         )
     finally:
         await bot.session.close()
