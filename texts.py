@@ -107,6 +107,10 @@ TEXTS = {
             "“Delete messages” permission."
         ),
         "sent_by": "👤 Sent by {user}",
+        "already_posted": (
+            "🔁 {user}, this one was already posted, here it is."
+        ),
+        "already_posted_anon": "🔁 This one was already posted, here it is.",
         "link_line": "🔗 {link}",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
@@ -238,6 +242,8 @@ TEXTS = {
             "с правом «Удаление сообщений»."
         ),
         "sent_by": "👤 Прислал(а) {user}",
+        "already_posted": "🔁 {user}, это уже скидывали, вот оно.",
+        "already_posted_anon": "🔁 Это уже скидывали, вот оно.",
         "link_line": "🔗 {link}",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
@@ -365,6 +371,8 @@ TEXTS = {
             "õigusega „Sõnumite kustutamine”."
         ),
         "sent_by": "👤 Saatis {user}",
+        "already_posted": "🔁 {user}, see oli juba siin, vaata siit.",
+        "already_posted_anon": "🔁 See oli juba siin, vaata siit.",
         "link_line": "🔗 {link}",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (

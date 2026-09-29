@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -47,6 +48,7 @@ from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramMigrateToChat,
     TelegramNetworkError,
 )
 from aiogram.filters import (
@@ -107,6 +109,11 @@ DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
 # Seconds to upload a file to Telegram. aiogram's default of 60 is too
 # short for a 1080p video of tens of megabytes on a home connection.
 UPLOAD_TIMEOUT = 300
+# If a video that is among the last RECENT_LIMIT ones in a group, and
+# not older than RECENT_MAX_AGE seconds, is posted again, the bot
+# points to the earlier message instead of sending it once more.
+RECENT_LIMIT = 50
+RECENT_MAX_AGE = 7 * 24 * 60 * 60
 
 # How the bot is being stopped: "shutdown" (off for a while, the
 # default, also for Ctrl+C) or "restart" (back in a few seconds).
@@ -182,6 +189,8 @@ state: dict[str, dict[str, Any]] = {
     "chats": {},
     "groups": {},
     "restart_notices": {},
+    # chat id -> {media key: [message id, unix time]}, oldest first.
+    "recent": {},
 }
 
 
@@ -263,6 +272,51 @@ def forget_group(chat_id: int):
     """Remove a group from the persistent list."""
     if state["groups"].pop(str(chat_id), None) is not None:
         save_state()
+
+
+def move_chat(old_id: int | str, new_id: int | str):
+    """Carry a group's data over to its new id.
+
+    When a group becomes a supergroup (for example, after an admin
+    changes some of its settings), Telegram gives it a new id, and
+    everything saved under the old one would be lost.
+    """
+    old_id, new_id = str(old_id), str(new_id)
+    changed = False
+    for key in ("chats", "groups", "recent", "restart_notices"):
+        old = state[key].pop(old_id, None)
+        if old is None:
+            continue
+        changed = True
+        if key == "restart_notices":
+            continue  # that message stays in the old chat
+        new = state[key].get(new_id)
+        if isinstance(old, dict) and isinstance(new, dict):
+            # Settings made in the new chat win.
+            state[key][new_id] = {**old, **new}
+        elif new is None:
+            state[key][new_id] = old
+    if changed:
+        logging.info("group %s is now %s, settings moved", old_id, new_id)
+        save_state()
+
+
+def earlier_post(chat_id: int, key: str) -> int | None:
+    """Return the id of a recent message with the same media, if any."""
+    entry = state["recent"].get(str(chat_id), {}).get(key)
+    if entry and time.time() - entry[1] < RECENT_MAX_AGE:
+        return entry[0]
+    return None
+
+
+def remember_post(chat_id: int, key: str, message_id: int):
+    """Save the message with some media as the latest one in a chat."""
+    recent = state["recent"].setdefault(str(chat_id), {})
+    recent.pop(key, None)  # move it to the end, as the newest
+    recent[key] = [message_id, int(time.time())]
+    while len(recent) > RECENT_LIMIT:
+        del recent[next(iter(recent))]
+    save_state()
 
 
 # ---------- helpers ----------
@@ -446,6 +500,24 @@ def is_album(url: str) -> bool:
     if platform == "tiktok":
         return "/photo/" in resolve_url(url)
     return is_instagram_post(url)
+
+
+def media_key(url: str) -> str:
+    """Return a key that is the same for every link to one post.
+
+    For example, a vm.tiktok.com short link and the full link it
+    leads to, or an Instagram /reel/ and /p/ link with the same code,
+    give the same key.
+    """
+    platform = platform_of(url)
+    full = url
+    if platform == "tiktok":
+        with contextlib.suppress(Exception):
+            full = resolve_url(url)
+    m = re.search(r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", full)
+    if m:
+        return f"{platform}:{m.group(1)}"
+    return full.split("?")[0].rstrip("/")
 
 
 def _page_json(html: str) -> list[dict]:
@@ -803,7 +875,25 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
         return download_tiktok(url, outdir)
     if is_instagram_post(url):
         return download_instagram_single(url, outdir)
+    if platform == "instagram":
+        return download_instagram_reel(url, outdir)
     return download_generic(url, outdir, platform)
+
+
+def download_instagram_reel(url: str, outdir: str) -> tuple[str, dict]:
+    """Download an Instagram Reel: yt-dlp first, gallery-dl as a backup.
+
+    The two tools talk to Instagram differently, so when Instagram
+    changes something, one of them often still works. A too big video
+    is not retried: gallery-dl would get the same file.
+    """
+    try:
+        return download_generic(url, outdir, "instagram")
+    except TooBigError:
+        raise
+    except Exception as e:
+        logging.warning("yt-dlp failed on %s (%s), trying gallery-dl", url, e)
+    return download_instagram_single(url, outdir)
 
 
 def generic_opts(outdir: str, platform: str) -> dict:
@@ -1087,7 +1177,8 @@ async def reply_with_media(
     videos, up to 10 per album), everything else as a video. By default
     the media replies to the message; with as_reply=False it's sent as
     a separate message, with `caption` (HTML) under it or under the
-    first album. In groups it comes without a notification.
+    first album. In groups it comes without a notification. Returns the
+    id of the first message sent.
     """
     options = {"disable_notification": is_silent(msg.chat)}
     if as_reply:
@@ -1098,6 +1189,7 @@ async def reply_with_media(
         items = await get_album_items(bot, url)
     else:
         items = [("video", await get_file_id(bot, url))]
+    first_id = None
     for n, part in enumerate(chunks(items)):
         # Only the first message or album gets the caption.
         text = caption if n == 0 else None
@@ -1105,13 +1197,15 @@ async def reply_with_media(
             kind, file_id = part[0]
             send = msg.answer_video if kind == "video" else msg.answer_photo
             extra = {"supports_streaming": True} if kind == "video" else {}
-            await send(
-                file_id,
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                **extra,
-                **options,
-            )
+            sent = [
+                await send(
+                    file_id,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    **extra,
+                    **options,
+                )
+            ]
         else:
             media = [
                 album_input(
@@ -1122,7 +1216,10 @@ async def reply_with_media(
                 )
                 for i, (kind, file_id) in enumerate(part)
             ]
-            await msg.answer_media_group(media, **options)
+            sent = await msg.answer_media_group(media, **options)
+        if first_id is None and sent:
+            first_id = sent[0].message_id
+    return first_id
 
 
 # ---------- handlers: private chat ----------
@@ -1263,10 +1360,17 @@ async def on_group_link(msg: Message, bot: Bot):
     url = LINK_RE.search(msg.text).group(0)
     mode = cleanup_mode(msg.chat.id)
     lang = group_lang(msg.chat.id, msg.from_user)
+    logging.info(
+        "group %s: %s link, cleanup=%s", msg.chat.id, platform_of(url), mode
+    )
+    key = await asyncio.to_thread(media_key, url)
+    earlier = earlier_post(msg.chat.id, key)
+    if earlier and await point_to_earlier(bot, msg, earlier, mode, lang):
+        return
     await react(bot, msg, REACTION_WORKING)
     try:
         async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
-            await reply_with_media(
+            sent_id = await reply_with_media(
                 bot,
                 msg,
                 url,
@@ -1280,6 +1384,8 @@ async def on_group_link(msg: Message, bot: Bot):
         error = await msg.reply(error_text(lang, e), disable_notification=True)
         delete_later(bot, error.chat.id, error.message_id)
         return
+    if sent_id is not None:
+        remember_post(msg.chat.id, key, sent_id)
     if mode == "keep":
         await react(bot, msg, None)
         return
@@ -1287,9 +1393,64 @@ async def on_group_link(msg: Message, bot: Bot):
     # "Delete messages" right this fails, and the message just stays.
     try:
         await msg.delete()
+        logging.info("deleted the link message in %s", msg.chat.id)
     except Exception as e:
         logging.warning("couldn't delete the link message: %s", e)
         await react(bot, msg, None)
+
+
+async def point_to_earlier(
+    bot: Bot, msg: Message, earlier: int, mode: str, lang: str
+) -> bool:
+    """Answer a repeated link by replying to the earlier media.
+
+    In the modes that delete links, the repeated one is deleted too.
+    Returns False if the earlier message is gone (deleted by someone),
+    so the media has to be sent again.
+    """
+    if mode == "none":
+        text = t(lang, "already_posted_anon")
+    else:
+        text = t(lang, "already_posted", user=sender_mention(msg.from_user))
+    try:
+        await msg.answer(
+            text,
+            reply_parameters=ReplyParameters(
+                message_id=earlier, allow_sending_without_reply=False
+            ),
+            disable_notification=True,
+        )
+    except TelegramBadRequest as e:
+        logging.info("earlier post %s is gone: %s", earlier, e)
+        return False
+    logging.info(
+        "group %s: repeated link, pointed to %s", msg.chat.id, earlier
+    )
+    if mode != "keep":
+        try:
+            await msg.delete()
+        except Exception as e:
+            logging.warning("couldn't delete the repeated link: %s", e)
+    return True
+
+
+@router.message(F.migrate_to_chat_id, group)
+async def on_migrated(msg: Message):
+    """Move the settings when a group becomes a supergroup.
+
+    This message comes in the old group.
+    """
+    move_chat(msg.chat.id, msg.migrate_to_chat_id)
+
+
+@router.message(F.migrate_from_chat_id, group)
+async def on_migrated_from(msg: Message):
+    """Move the settings when a group becomes a supergroup.
+
+    This message comes in the new supergroup; whichever of the two
+    arrives first does the job.
+    """
+    move_chat(msg.migrate_from_chat_id, msg.chat.id)
 
 
 async def is_group_admin(bot: Bot, chat_id: int, user: User | None) -> bool:
@@ -1607,6 +1768,10 @@ async def post_restart_notices(bot: Bot, key: str = "restarting"):
                 int(chat_id), t(lang, key), disable_notification=True
             )
             state["restart_notices"][chat_id] = msg.message_id
+        except TelegramMigrateToChat as e:
+            # The group became a supergroup while the bot wasn't
+            # looking; the notice goes there next time.
+            move_chat(chat_id, e.migrate_to_chat_id)
         except (TelegramForbiddenError, TelegramBadRequest) as e:
             # Kicked, group deleted, or no right to write: no point
             # in trying again.

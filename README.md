@@ -32,6 +32,10 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 
 `/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. If the download fails, the message is never deleted.
 
+If someone posts a video that was already sent in the group (one of the last 50, within a week), the bot doesn't send it again: it replies to the earlier video with "🔁 already posted". Short and full links to the same post count as the same video.
+
+Settings survive a group turning into a supergroup (Telegram gives it a new id then, e.g. after admins change some group settings).
+
 | Platform | Links | Status |
 |---|---|---|
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
@@ -107,3 +111,20 @@ The bot picks them up automatically. **Use a throwaway account**, not your main 
 ## Disclaimer
 
 For personal use. Respect creators' rights and the platforms' Terms of Service — don't reupload other people's content as your own.
+
+Use a separate (throwaway) account for cookies, never your main one: platforms may ban accounts used for automated downloads. Cookies are as secret as a password — keep the `cookies/` folder out of git. The bot reads them on every download, so no restart is needed after replacing them.
+
+## Troubleshooting
+
+**"Sign in to confirm you're not a bot" (YouTube) or "login required" (Instagram)** — add or refresh cookies (see above). For YouTube, export them from a private/incognito window: log in, open `youtube.com/robots.txt` in the same tab, export, then close the window and never open that session again (YouTube rotates cookies in open tabs).
+
+**Instagram: HTTP 400 / "content may be inappropriate"** — Instagram hides some posts from the account used for cookies. On that account:
+1. Set a birthday that makes it 18+ (*Accounts Center → Personal details → Birthday*).
+2. Set *Settings → Suggested content → Sensitive content* to *Standard* (or *More* where available).
+3. Open the post in the browser to check it shows, then export cookies again.
+
+**YouTube: "Sign in to confirm your age"** — the video is age-restricted. It needs cookies from an 18+ account; in the EU, YouTube may also ask that account to verify its age. Age-restricted Shorts are rare.
+
+**Downloads suddenly break everywhere** — the platform changed something. Update the downloaders: `start.bat update`, or `pip install -U -r requirements.txt`. If yt-dlp fails on an Instagram Reel, the bot automatically retries with gallery-dl.
+
+**Can't be fixed on the bot's side:** private or deleted posts, and videos blocked in your country.

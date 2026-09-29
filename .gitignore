@@ -218,5 +218,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Bot runtime data: secrets and state, never commit
+media_cache.json
 cookies/
 state.json
