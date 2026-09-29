@@ -54,8 +54,10 @@ TEXTS = {
         "group_lang_set": "✅ Group language: English",
         "cmd_group_language": "Change the group language (admins)",
         "group_lang_hint": (
-            "\n\nAdmins: /language changes my language, /notices turns "
-            "restart notices on or off."
+            "\n"
+            "\n"
+            "Admins: /language changes my language, /notices turns restart "
+            "notices on or off."
         ),
         "status_online": "🟢 Online",
         "status_offline": "🔴 Offline",
@@ -63,14 +65,49 @@ TEXTS = {
         "timeout": "❌ The download took too long. Please try again later.",
         "shutting_down": "🌙 The bot is off for now, back later.",
         "cmd_group_notices": "Restart notices on/off (admins)",
-        "choose_notices": ("Should I post here when I restart or shut down?"),
+        "choose_notices": "Should I post here when I restart or shut down?",
         "notices_now_on": "Now: 🔔 on",
         "notices_now_off": "Now: 🔕 off",
         "notices_on_button": "🔔 Yes",
         "notices_off_button": "🔕 No",
-        "notices_set_on": ("🔔 Restart and shutdown notices are on."),
-        "notices_set_off": ("🔕 Restart and shutdown notices are off."),
+        "notices_set_on": "🔔 Restart and shutdown notices are on.",
+        "notices_set_off": "🔕 Restart and shutdown notices are off.",
         "source_line": "\n\n🧩 Open source: {repo}",
+        "cmd_help": "Help and commands",
+        "cmd_group_cleanup": "What to do with link messages (admins)",
+        "help": (
+            "<b>How to use</b>\n"
+            "• Private chat: send me a link, I reply with the video\n"
+            "• Any chat: type <code>@{bot} </code>, paste a link and tap the "
+            "result\n"
+            "• Groups: add me, and I reply to every link with the video\n"
+            "\n"
+            "<b>Commands</b> (who can use them)\n"
+            "/start — welcome message (everyone)\n"
+            "/help — this help (everyone)\n"
+            "/language — in private: your language (everyone); in groups: the "
+            "group language (admins)\n"
+            "/notices — restart and shutdown messages in the group (admins)\n"
+            "/cleanup — what to do with link messages in the group (admins)"
+        ),
+        "choose_cleanup": (
+            "What should I do with the message that has the link, once the "
+            "video is sent?"
+        ),
+        "cleanup_keep": "Keep it, reply to it",
+        "cleanup_link_user": "Delete, show link + sender",
+        "cleanup_user": "Delete, show sender",
+        "cleanup_none": "Delete, video only",
+        "cleanup_now": "Now: {mode}",
+        "cleanup_set": "✅ Done: {mode}",
+        "cleanup_need_right": (
+            "\n"
+            "\n"
+            "⚠️ I can't delete messages here yet: make me an admin with the "
+            "“Delete messages” permission."
+        ),
+        "sent_by": "👤 Sent by {user}",
+        "link_line": "🔗 {link}",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -139,7 +176,9 @@ TEXTS = {
         "group_lang_set": "✅ Язык группы: русский",
         "cmd_group_language": "Сменить язык группы (админы)",
         "group_lang_hint": (
-            "\n\nАдминам: /language меняет мой язык, /notices включает или "
+            "\n"
+            "\n"
+            "Админам: /language меняет мой язык, /notices включает или "
             "выключает уведомления о перезапуске."
         ),
         "status_online": "🟢 Работает",
@@ -164,6 +203,42 @@ TEXTS = {
             "🔕 Уведомления о перезапуске и выключении выключены."
         ),
         "source_line": "\n\n🧩 Исходный код: {repo}",
+        "cmd_help": "Помощь и команды",
+        "cmd_group_cleanup": "Что делать с сообщениями-ссылками (админы)",
+        "help": (
+            "<b>Как пользоваться</b>\n"
+            "• В личке: пришли ссылку, я отвечу видео\n"
+            "• В любом чате: напиши <code>@{bot} </code>, вставь ссылку и "
+            "нажми на результат\n"
+            "• В группах: добавь меня, и я буду отвечать видео на каждую "
+            "ссылку\n"
+            "\n"
+            "<b>Команды</b> (кому доступны)\n"
+            "/start — приветствие (всем)\n"
+            "/help — эта справка (всем)\n"
+            "/language — в личке: твой язык (всем); в группе: язык группы "
+            "(админам)\n"
+            "/notices — сообщения о перезапуске и выключении в группе "
+            "(админам)\n"
+            "/cleanup — что делать с сообщениями-ссылками в группе (админам)"
+        ),
+        "choose_cleanup": (
+            "Что делать с сообщением со ссылкой, когда видео отправлено?"
+        ),
+        "cleanup_keep": "Оставить, ответить на него",
+        "cleanup_link_user": "Удалить, указать ссылку и автора",
+        "cleanup_user": "Удалить, указать автора",
+        "cleanup_none": "Удалить, только видео",
+        "cleanup_now": "Сейчас: {mode}",
+        "cleanup_set": "✅ Готово: {mode}",
+        "cleanup_need_right": (
+            "\n"
+            "\n"
+            "⚠️ Пока я не могу здесь удалять сообщения: сделайте меня админом "
+            "с правом «Удаление сообщений»."
+        ),
+        "sent_by": "👤 Прислал(а) {user}",
+        "link_line": "🔗 {link}",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -231,7 +306,9 @@ TEXTS = {
         "group_lang_set": "✅ Grupi keel: eesti",
         "cmd_group_language": "Muuda grupi keelt (adminid)",
         "group_lang_hint": (
-            "\n\nAdminidele: /language muudab minu keelt, /notices lülitab "
+            "\n"
+            "\n"
+            "Adminidele: /language muudab minu keelt, /notices lülitab "
             "taaskäivituse teated sisse või välja."
         ),
         "status_online": "🟢 Töötab",
@@ -256,6 +333,39 @@ TEXTS = {
             "🔕 Taaskäivituse ja väljalülitamise teated on väljas."
         ),
         "source_line": "\n\n🧩 Lähtekood: {repo}",
+        "cmd_help": "Abi ja käsud",
+        "cmd_group_cleanup": "Mida teha linkidega sõnumitega (adminid)",
+        "help": (
+            "<b>Kuidas kasutada</b>\n"
+            "• Privaatselt: saada mulle link, vastan videoga\n"
+            "• Igas vestluses: kirjuta <code>@{bot} </code>, kleebi link ja "
+            "vajuta tulemusele\n"
+            "• Gruppides: lisa mind ja vastan igale lingile videoga\n"
+            "\n"
+            "<b>Käsud</b> (kes saab kasutada)\n"
+            "/start — tervitus (kõik)\n"
+            "/help — see abi (kõik)\n"
+            "/language — privaatselt: sinu keel (kõik); grupis: grupi keel "
+            "(adminid)\n"
+            "/notices — taaskäivituse ja väljalülitamise teated grupis "
+            "(adminid)\n"
+            "/cleanup — mida teha linkidega sõnumitega grupis (adminid)"
+        ),
+        "choose_cleanup": "Mida teha lingiga sõnumiga, kui video on saadetud?",
+        "cleanup_keep": "Jäta alles, vasta sellele",
+        "cleanup_link_user": "Kustuta, näita linki ja saatjat",
+        "cleanup_user": "Kustuta, näita saatjat",
+        "cleanup_none": "Kustuta, ainult video",
+        "cleanup_now": "Praegu: {mode}",
+        "cleanup_set": "✅ Valmis: {mode}",
+        "cleanup_need_right": (
+            "\n"
+            "\n"
+            "⚠️ Ma ei saa siin veel sõnumeid kustutada: tehke mind adminiks "
+            "õigusega „Sõnumite kustutamine”."
+        ),
+        "sent_by": "👤 Saatis {user}",
+        "link_line": "🔗 {link}",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "

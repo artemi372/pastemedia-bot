@@ -27,6 +27,7 @@ hold only one media item, not an album.
 import asyncio
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
@@ -74,6 +75,7 @@ from aiogram.types import (
     LinkPreviewOptions,
     Message,
     ReactionTypeEmoji,
+    ReplyParameters,
     User,
 )
 from aiogram.utils.chat_action import ChatActionSender
@@ -95,6 +97,10 @@ ALBUM_LIMIT = 10  # max photos in one Telegram album
 # standard reaction emoji.
 REACTION_WORKING = "👀"
 REACTION_FAILED = "🤷"
+# What to do with a group message that has a link, set by admins with
+# /cleanup. Only "keep" replies to it; the others delete it and send
+# the media as a separate message with an optional caption.
+CLEANUP_MODES = ("keep", "link_user", "user", "none")
 ERROR_TTL = 15  # seconds before error messages in groups are deleted
 SLOW_AFTER = 20  # seconds before "taking longer than usual"
 DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
@@ -236,6 +242,12 @@ def set_chat_setting(chat_id: int, key: str, value: Any):
     """Save one setting of a group to the persistent state."""
     state["chats"].setdefault(str(chat_id), {})[key] = value
     save_state()
+
+
+def cleanup_mode(chat_id: int | str) -> str:
+    """Return the /cleanup mode of a group ("keep" by default)."""
+    mode = state["chats"].get(str(chat_id), {}).get("cleanup", "keep")
+    return mode if mode in CLEANUP_MODES else "keep"
 
 
 def notices_enabled(chat_id: int | str) -> bool:
@@ -918,22 +930,27 @@ def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
 
 
 def album_input(
-    kind: str, media: str | FSInputFile, caption: str | None = None, **extra
+    kind: str,
+    media: str | FSInputFile,
+    caption: str | None = None,
+    parse_mode: str | None = None,
+    **extra,
 ) -> InputMediaPhoto | InputMediaVideo:
     """Build one album item: a photo or a video.
 
-    `media` is a file to upload or a file_id. parse_mode=None: the
-    caption is a URL, and "&" in it would break HTML parsing.
+    `media` is a file to upload or a file_id. parse_mode is None by
+    default: storage captions are raw URLs, and "&" in them would break
+    HTML parsing.
     """
     if kind == "video":
         return InputMediaVideo(
             media=media,
             caption=caption,
-            parse_mode=None,
+            parse_mode=parse_mode,
             supports_streaming=True,
             **extra,
         )
-    return InputMediaPhoto(media=media, caption=caption, parse_mode=None)
+    return InputMediaPhoto(media=media, caption=caption, parse_mode=parse_mode)
 
 
 def sent_item(msg: Message) -> tuple[str, str] | None:
@@ -1041,36 +1058,71 @@ def is_silent(chat: Chat) -> bool:
     return chat.type != ChatType.PRIVATE
 
 
-async def reply_with_media(bot: Bot, msg: Message, url: str):
-    """Reply to a message with the media behind a link.
+def sender_mention(user: User | None) -> str:
+    """Return an HTML mention: @username, or a clickable name."""
+    if user is None:
+        return "?"
+    if user.username:
+        return f"@{user.username}"
+    name = html.escape(user.full_name or str(user.id))
+    return f'<a href="tg://user?id={user.id}">{name}</a>'
+
+
+def cleanup_caption(mode: str, lang: str, url: str, user: User | None):
+    """Build the caption for a /cleanup mode, or None if it has none."""
+    parts = []
+    if mode == "link_user":
+        parts.append(t(lang, "link_line", link=html.escape(url)))
+    if mode in ("link_user", "user"):
+        parts.append(t(lang, "sent_by", user=sender_mention(user)))
+    return "\n".join(parts) or None
+
+
+async def reply_with_media(
+    bot: Bot, msg: Message, url: str, as_reply: bool = True, caption=None
+):
+    """Send the media behind a link to the chat of a message.
 
     TikTok slideshows and Instagram posts come as albums (photos and
-    videos, up to 10 per album), everything else as a video. In groups
-    the reply comes without a notification.
+    videos, up to 10 per album), everything else as a video. By default
+    the media replies to the message; with as_reply=False it's sent as
+    a separate message, with `caption` (HTML) under it or under the
+    first album. In groups it comes without a notification.
     """
-    silent = is_silent(msg.chat)
+    options = {"disable_notification": is_silent(msg.chat)}
+    if as_reply:
+        options["reply_parameters"] = ReplyParameters(
+            message_id=msg.message_id
+        )
     if await asyncio.to_thread(is_album, url):
-        for part in chunks(await get_album_items(bot, url)):
-            if len(part) == 1:
-                kind, file_id = part[0]
-                if kind == "video":
-                    await msg.reply_video(
-                        file_id,
-                        supports_streaming=True,
-                        disable_notification=silent,
-                    )
-                else:
-                    await msg.reply_photo(file_id, disable_notification=silent)
-            else:
-                await msg.reply_media_group(
-                    [album_input(kind, file_id) for kind, file_id in part],
-                    disable_notification=silent,
+        items = await get_album_items(bot, url)
+    else:
+        items = [("video", await get_file_id(bot, url))]
+    for n, part in enumerate(chunks(items)):
+        # Only the first message or album gets the caption.
+        text = caption if n == 0 else None
+        if len(part) == 1:
+            kind, file_id = part[0]
+            send = msg.answer_video if kind == "video" else msg.answer_photo
+            extra = {"supports_streaming": True} if kind == "video" else {}
+            await send(
+                file_id,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                **extra,
+                **options,
+            )
+        else:
+            media = [
+                album_input(
+                    kind,
+                    file_id,
+                    text if i == 0 else None,
+                    parse_mode=ParseMode.HTML,
                 )
-        return
-    file_id = await get_file_id(bot, url)
-    await msg.reply_video(
-        file_id, supports_streaming=True, disable_notification=silent
-    )
+                for i, (kind, file_id) in enumerate(part)
+            ]
+            await msg.answer_media_group(media, **options)
 
 
 # ---------- handlers: private chat ----------
@@ -1154,6 +1206,20 @@ async def on_link(msg: Message, bot: Bot):
         logging.warning("couldn't delete status message")
 
 
+@router.message(Command("help"))
+async def on_help(msg: Message, bot: Bot):
+    """Explain how to use the bot and who can run which command."""
+    if msg.chat.type == ChatType.PRIVATE:
+        lang = lang_of(msg.from_user)
+    else:
+        lang = group_lang(msg.chat.id, msg.from_user)
+    me = await bot.me()
+    await msg.answer(
+        t(lang, "help", bot=me.username),
+        disable_notification=is_silent(msg.chat),
+    )
+
+
 @router.message(private)
 async def on_other(msg: Message):
     """Hint that a link is expected in private chat."""
@@ -1195,18 +1261,35 @@ async def on_group_link(msg: Message, bot: Bot):
     works.
     """
     url = LINK_RE.search(msg.text).group(0)
+    mode = cleanup_mode(msg.chat.id)
+    lang = group_lang(msg.chat.id, msg.from_user)
     await react(bot, msg, REACTION_WORKING)
     try:
         async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
-            await reply_with_media(bot, msg, url)
+            await reply_with_media(
+                bot,
+                msg,
+                url,
+                as_reply=mode == "keep",
+                caption=cleanup_caption(mode, lang, url, msg.from_user),
+            )
     except Exception as e:
         logging.exception("download failed: %s", url)
+        # The original stays on failure, so the link isn't lost.
         await react(bot, msg, REACTION_FAILED)
-        lang = group_lang(msg.chat.id, msg.from_user)
         error = await msg.reply(error_text(lang, e), disable_notification=True)
         delete_later(bot, error.chat.id, error.message_id)
         return
-    await react(bot, msg, None)
+    if mode == "keep":
+        await react(bot, msg, None)
+        return
+    # The media is sent, so the original message can go. Without the
+    # "Delete messages" right this fails, and the message just stays.
+    try:
+        await msg.delete()
+    except Exception as e:
+        logging.warning("couldn't delete the link message: %s", e)
+        await react(bot, msg, None)
 
 
 async def is_group_admin(bot: Bot, chat_id: int, user: User | None) -> bool:
@@ -1324,6 +1407,69 @@ async def on_group_notices_chosen(c: CallbackQuery, bot: Bot):
     lang = group_lang(chat_id, c.from_user)
     key = "notices_set_on" if choice == "on" else "notices_set_off"
     await c.message.edit_text(t(lang, key))
+    await c.answer()
+
+
+async def can_delete_messages(bot: Bot, chat_id: int) -> bool:
+    """Check whether the bot may delete other people's messages."""
+    me = await bot.me()
+    member = await bot.get_chat_member(chat_id, me.id)
+    if member.status == ChatMemberStatus.CREATOR:
+        return True
+    return member.status == ChatMemberStatus.ADMINISTRATOR and bool(
+        getattr(member, "can_delete_messages", False)
+    )
+
+
+@router.message(Command("cleanup"), group)
+async def on_group_cleanup(msg: Message, bot: Bot):
+    """Show admins the choice of what to do with link messages."""
+    lang = group_lang(msg.chat.id, msg.from_user)
+    if not await is_admin_message(bot, msg):
+        reply = await msg.reply(
+            t(lang, "admins_only"), disable_notification=True
+        )
+        delete_later(bot, reply.chat.id, reply.message_id)
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t(lang, f"cleanup_{mode}"),
+                    callback_data=f"gcleanup:{mode}",
+                )
+            ]
+            for mode in CLEANUP_MODES
+        ]
+    )
+    current = t(lang, f"cleanup_{cleanup_mode(msg.chat.id)}")
+    await msg.reply(
+        t(lang, "choose_cleanup")
+        + "\n"
+        + t(lang, "cleanup_now", mode=current),
+        reply_markup=kb,
+        disable_notification=True,
+    )
+
+
+@router.callback_query(F.data.startswith("gcleanup:"))
+async def on_group_cleanup_chosen(c: CallbackQuery, bot: Bot):
+    """Save the cleanup mode if an admin pressed the button."""
+    mode = (c.data or "").split(":", 1)[-1]
+    if mode not in CLEANUP_MODES or not isinstance(c.message, Message):
+        await c.answer()
+        return
+    chat_id = c.message.chat.id
+    # Anyone in the group can press the buttons, so check again.
+    if not await is_group_admin(bot, chat_id, c.from_user):
+        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
+        return
+    set_chat_setting(chat_id, "cleanup", mode)
+    lang = group_lang(chat_id, c.from_user)
+    text = t(lang, "cleanup_set", mode=t(lang, f"cleanup_{mode}"))
+    if mode != "keep" and not await can_delete_messages(bot, chat_id):
+        text += t(lang, "cleanup_need_right")
+    await c.message.edit_text(text)
     await c.answer()
 
 
@@ -1497,6 +1643,7 @@ async def setup_bot_profile(bot: Bot):
         lang_code = None if code == DEFAULT_LANG else code
         commands = [
             BotCommand(command="start", description=t(code, "cmd_start")),
+            BotCommand(command="help", description=t(code, "cmd_help")),
             BotCommand(
                 command="language", description=t(code, "cmd_language")
             ),
@@ -1513,6 +1660,11 @@ async def setup_bot_profile(bot: Bot):
                     command="notices",
                     description=t(code, "cmd_group_notices"),
                 ),
+                BotCommand(
+                    command="cleanup",
+                    description=t(code, "cmd_group_cleanup"),
+                ),
+                BotCommand(command="help", description=t(code, "cmd_help")),
             ],
             scope=BotCommandScopeAllGroupChats(),
             language_code=lang_code,

@@ -20,6 +20,18 @@ pick the result — the bot replaces it with the video.
 
 You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. While downloading, the bot puts 👀 on the message with the link (removed when done, 🤷 on failure). In groups, error messages delete themselves after 15 seconds to keep the chat clean.
 
+### Commands
+
+| Command | Where | Who |
+|---|---|---|
+| `/start` | private chat | everyone |
+| `/help` | everywhere | everyone |
+| `/language` | private chat: your language; group: the group language | everyone / group admins |
+| `/notices` | group: restart and shutdown messages on/off | group admins |
+| `/cleanup` | group: what to do with the message that has the link | group admins |
+
+`/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. If the download fails, the message is never deleted.
+
 | Platform | Links | Status |
 |---|---|---|
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
