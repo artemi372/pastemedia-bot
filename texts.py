@@ -72,7 +72,7 @@ TEXTS = {
         "notices_off_button": "🔕 No",
         "notices_set_on": "🔔 Restart and shutdown notices are on.",
         "notices_set_off": "🔕 Restart and shutdown notices are off.",
-        "source_line": "\n\n🧩 Open source: {repo}",
+        "source_line": "\n\n👤 Author: @{author}\n🧩 Open source: {repo}",
         "cmd_help": "Help and commands",
         "cmd_group_cleanup": "What to do with link messages (admins)",
         "help": (
@@ -210,7 +210,7 @@ TEXTS = {
         "notices_set_off": (
             "🔕 Уведомления о перезапуске и выключении выключены."
         ),
-        "source_line": "\n\n🧩 Исходный код: {repo}",
+        "source_line": "\n\n👤 Автор: @{author}\n🧩 Исходный код: {repo}",
         "cmd_help": "Помощь и команды",
         "cmd_group_cleanup": "Что делать с сообщениями-ссылками (админы)",
         "help": (
@@ -346,7 +346,7 @@ TEXTS = {
         "notices_set_off": (
             "🔕 Taaskäivituse ja väljalülitamise teated on väljas."
         ),
-        "source_line": "\n\n🧩 Lähtekood: {repo}",
+        "source_line": "\n\n👤 Autor: @{author}\n🧩 Lähtekood: {repo}",
         "cmd_help": "Abi ja käsud",
         "cmd_group_cleanup": "Mida teha linkidega sõnumitega (adminid)",
         "help": (

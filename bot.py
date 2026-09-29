@@ -22,6 +22,9 @@ cache, which is saved to disk. TikTok photo slideshows are sent as a
 photo album in private chats and groups. In inline mode they are
 rendered into an mp4 (images + original music) with ffmpeg, because an
 inline message can hold only one media item, not an album.
+
+Author: @olidajadolidmajad on Telegram.
+Source code: https://github.com/artemi372/pastemedia-bot
 """
 
 import asyncio
@@ -93,6 +96,9 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
 
 REPO_URL = "https://github.com/artemi372/pastemedia-bot"
+# Telegram username of the author, shown in /start, /help and the
+# bot profile.
+AUTHOR = "olidajadolidmajad"
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
@@ -1200,6 +1206,11 @@ def is_silent(chat: Chat) -> bool:
     return chat.type != ChatType.PRIVATE
 
 
+def credits(lang: str) -> str:
+    """Return the author and source code lines for a message."""
+    return t(lang, "source_line", author=AUTHOR, repo=REPO_URL)
+
+
 def sender_mention(user: User | None) -> str:
     """Return an HTML mention: @username, or a clickable name."""
     if user is None:
@@ -1289,9 +1300,7 @@ async def on_start(msg: Message, bot: Bot):
         text=t(lang, "try_button"), switch_inline_query=""
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[try_button]])
-    text = t(lang, "start", bot=me.username) + t(
-        lang, "source_line", repo=REPO_URL
-    )
+    text = t(lang, "start", bot=me.username) + credits(lang)
     # No big GitHub preview card under the greeting.
     await msg.answer(
         text,
@@ -1364,8 +1373,9 @@ async def on_help(msg: Message, bot: Bot):
         lang = group_lang(msg.chat.id, msg.from_user)
     me = await bot.me()
     await msg.answer(
-        t(lang, "help", bot=me.username),
+        t(lang, "help", bot=me.username) + credits(lang),
         disable_notification=is_silent(msg.chat),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
 
 
@@ -1920,9 +1930,9 @@ async def set_profile_status(bot: Bot, online: bool):
         for code in TEXTS:
             lang_code = None if code == DEFAULT_LANG else code
             status = t(code, status_key)
-            description = t(code, "bot_description", bot=me.username) + t(
-                code, "source_line", repo=REPO_URL
-            )
+            description = t(
+                code, "bot_description", bot=me.username
+            ) + credits(code)
             await bot.set_my_description(
                 fit(status + "\n\n" + description, 512),
                 language_code=lang_code,
