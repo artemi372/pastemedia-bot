@@ -17,11 +17,11 @@ Inline flow:
    upload it to a private storage channel to obtain a ``file_id``.
 3. ``edit_message_media`` -- replace the placeholder with the video.
 
-Repeated requests for the same link are served from the ``file_id``
-cache. TikTok photo slideshows are sent as a photo album in private
-chats and groups. In inline mode they are rendered into an mp4
-(images + original music) with ffmpeg, because an inline message can
-hold only one media item, not an album.
+Repeated requests for the same post are served from the ``file_id``
+cache, which is saved to disk. TikTok photo slideshows are sent as a
+photo album in private chats and groups. In inline mode they are
+rendered into an mp4 (images + original music) with ffmpeg, because an
+inline message can hold only one media item, not an album.
 """
 
 import asyncio
@@ -153,6 +153,11 @@ COOKIES_DIR = "cookies"
 # Persistent state that survives restarts. Keep it out of git: it is
 # runtime data, not code.
 STATE_FILE = "state.json"
+# Telegram file_ids of everything uploaded to the storage channel, so
+# a video is uploaded there once, not after every restart or for every
+# kind of link to it. Also runtime data, keep it out of git.
+CACHE_FILE = "media_cache.json"
+CACHE_LIMIT = 5000  # entries per kind; the oldest are dropped
 
 ALLOWED_UPDATES = [
     "message",
@@ -167,10 +172,11 @@ router = Router()
 
 # ---------- runtime state ----------
 
-# url -> Telegram file_id of the video (in memory)
-cache: dict[str, str] = {}
-# url -> album items as (kind, file_id), kind is "photo" or "video"
-album_cache: dict[str, list[tuple[str, str]]] = {}
+# Saved to CACHE_FILE, keyed by media_key():
+#   videos: key -> Telegram file_id of the video
+#   albums: key -> album items as [kind, file_id], kind is "photo" or
+#   "video"
+media_cache: dict[str, dict[str, Any]] = {"videos": {}, "albums": {}}
 # Instagram post url -> its files as listed by gallery-dl (in memory)
 instagram_posts: dict[str, list[dict]] = {}
 # short url -> full url after redirects (in memory)
@@ -215,6 +221,38 @@ def load_state():
         logging.exception(
             "couldn't read %s, starting with empty state", STATE_FILE
         )
+
+
+def load_media_cache():
+    """Load the saved file_ids from CACHE_FILE, if it exists."""
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        for kind in media_cache:
+            media_cache[kind] = data.get(kind, {})
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logging.exception(
+            "couldn't read %s, starting with empty cache", CACHE_FILE
+        )
+
+
+def cache_get(kind: str, key: str) -> Any:
+    """Return a cached file_id (or album items), or None."""
+    return media_cache[kind].get(key)
+
+
+def cache_put(kind: str, key: str, value: Any):
+    """Save a file_id (or album items) and write CACHE_FILE."""
+    entries = media_cache[kind]
+    entries[key] = value
+    while len(entries) > CACHE_LIMIT:
+        del entries[next(iter(entries))]
+    tmp = CACHE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(media_cache, f, ensure_ascii=False)
+    os.replace(tmp, CACHE_FILE)
 
 
 def save_state():
@@ -370,6 +408,14 @@ def error_text(lang: str, e: Exception) -> str:
     # A network error while uploading is almost always a timeout.
     if isinstance(e, (DownloadTimeoutError, TelegramNetworkError)):
         return t(lang, "timeout")
+    # yt-dlp's wording for posts hidden from logged-out or underage
+    # viewers.
+    text = str(e).lower()
+    if any(
+        s in text
+        for s in ("log in for access", "login required", "confirm your age")
+    ):
+        return t(lang, "login_needed")
     return t(lang, "failed")
 
 
@@ -957,6 +1003,10 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
         "noprogress": True,
         "socket_timeout": 30,
     }
+    # Needed for posts TikTok shows only to logged-in adults.
+    cookiefile = cookies_for("tiktok")
+    if cookiefile:
+        base["cookiefile"] = cookiefile
     with yt_dlp.YoutubeDL(base) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -980,14 +1030,15 @@ async def get_file_id(bot: Bot, url: str) -> str:
     """Return a Telegram file_id for the video behind a link.
 
     On a cache miss, download the video and upload it to the storage
-    channel first.
+    channel first. Different links to one post share the cache entry.
     """
-    if url in cache:
-        return cache[url]
-    lock = locks.setdefault(url, asyncio.Lock())
+    key = await asyncio.to_thread(media_key, url)
+    if cached := cache_get("videos", key):
+        return cached
+    lock = locks.setdefault(key, asyncio.Lock())
     async with lock:
-        if url in cache:
-            return cache[url]
+        if cached := cache_get("videos", key):
+            return cached
         # A timed-out download may still hold its files open.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path, info = await run_with_timeout(download, url, tmp)
@@ -1006,8 +1057,8 @@ async def get_file_id(bot: Bot, url: str) -> str:
             )
         if msg.video is None:
             raise RuntimeError("Telegram didn't return the uploaded video")
-        cache[url] = msg.video.file_id
-        return cache[url]
+        cache_put("videos", key, msg.video.file_id)
+        return msg.video.file_id
 
 
 def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
@@ -1103,14 +1154,15 @@ async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
     """Return (kind, file_id) for every photo and video of an album.
 
     On a cache miss, download the files and upload them to the storage
-    channel first.
+    channel first. Different links to one post share the cache entry.
     """
-    if url in album_cache:
-        return album_cache[url]
-    lock = locks.setdefault("album:" + url, asyncio.Lock())
+    key = await asyncio.to_thread(media_key, url)
+    if cached := cache_get("albums", key):
+        return [tuple(item) for item in cached]
+    lock = locks.setdefault("album:" + key, asyncio.Lock())
     async with lock:
-        if url in album_cache:
-            return album_cache[url]
+        if cached := cache_get("albums", key):
+            return [tuple(item) for item in cached]
         items = []
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             files = await run_with_timeout(download_album, url, tmp)
@@ -1120,7 +1172,7 @@ async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
                         items.append(item)
         if not items:
             raise RuntimeError("Telegram didn't return the uploaded files")
-        album_cache[url] = items
+        cache_put("albums", key, [list(item) for item in items])
         return items
 
 
@@ -1682,10 +1734,11 @@ async def on_inline(q: InlineQuery):
         return
     url = m.group(0)
 
-    if url in cache:
+    file_id = cache_get("videos", await asyncio.to_thread(media_key, url))
+    if file_id:
         cached = InlineQueryResultCachedVideo(
             id="c" + result_id(url),
-            video_file_id=cache[url],
+            video_file_id=file_id,
             title=t(lang, "cached_title"),
         )
         await q.answer([cached], cache_time=1, is_personal=True)
@@ -1945,6 +1998,24 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def keep_awake(on: bool = True):
+    """Stop Windows from sleeping while the bot runs.
+
+    The screen may still turn off. Windows also clears this by itself
+    when the process exits, even after a crash. Does nothing on other
+    systems.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    es_continuous = 0x80000000
+    es_system_required = 0x00000001
+    flags = es_continuous | (es_system_required if on else 0)
+    if not ctypes.windll.kernel32.SetThreadExecutionState(flags):
+        logging.warning("couldn't keep the computer awake")
+
+
 async def main():
     """Start the bot and run it until it is stopped."""
     bot = Bot(
@@ -1953,6 +2024,8 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
     load_state()
+    load_media_cache()
+    keep_awake()
     dp.startup.register(on_startup)
     # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
     dp.shutdown.register(on_shutdown)
@@ -1962,6 +2035,7 @@ async def main():
         await setup_bot_profile(bot)
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     finally:
+        keep_awake(False)
         await bot.session.close()
         logging.info("bot stopped")
 

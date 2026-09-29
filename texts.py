@@ -107,6 +107,10 @@ TEXTS = {
             "“Delete messages” permission."
         ),
         "sent_by": "👤 Sent by {user}",
+        "login_needed": (
+            "🔞 This post is only shown to logged-in adults, so I can't"
+            " download it."
+        ),
         "already_posted": (
             "🔁 {user}, this one was already posted, here it is."
         ),
@@ -242,6 +246,10 @@ TEXTS = {
             "с правом «Удаление сообщений»."
         ),
         "sent_by": "👤 Прислал(а) {user}",
+        "login_needed": (
+            "🔞 Этот пост показывают только взрослым залогиненным"
+            " пользователям, скачать не получится."
+        ),
         "already_posted": "🔁 {user}, это уже скидывали, вот оно.",
         "already_posted_anon": "🔁 Это уже скидывали, вот оно.",
         "link_line": "🔗 {link}",
@@ -371,6 +379,10 @@ TEXTS = {
             "õigusega „Sõnumite kustutamine”."
         ),
         "sent_by": "👤 Saatis {user}",
+        "login_needed": (
+            "🔞 Seda postitust näidatakse ainult sisse logitud"
+            " täiskasvanutele, ma ei saa seda alla laadida."
+        ),
         "already_posted": "🔁 {user}, see oli juba siin, vaata siit.",
         "already_posted_anon": "🔁 See oli juba siin, vaata siit.",
         "link_line": "🔗 {link}",

@@ -51,6 +51,8 @@ Settings survive a group turning into a supergroup (Telegram gives it a new id t
 3. The video is uploaded to a private "storage" channel to obtain a `file_id`.
 4. The placeholder is edited into the video. Repeated links are served instantly from cache.
 
+Each video is uploaded to the storage channel only once: the `file_id`s are saved to `media_cache.json` (keep it out of git), so they survive restarts, and short and full links to one post share an entry.
+
 TikTok photo slideshows and Instagram carousels are sent as albums (up to 10 items per album) in private chats and groups; Instagram albums can mix photos and videos. In inline mode, where a message can hold only one media item, TikTok slideshows become a video with the original music, and Instagram posts send their first video, or a slideshow video if the post has only photos. Instagram posts are listed and downloaded with [gallery-dl](https://github.com/mikf/gallery-dl).
 
 ## Setup
@@ -96,6 +98,7 @@ If Instagram or YouTube refuses downloads ("login required", "sign in to confirm
 ```
 cookies/instagram.txt
 cookies/youtube.txt
+cookies/tiktok.txt
 ```
 
 The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.
@@ -106,7 +109,6 @@ The bot picks them up automatically. **Use a throwaway account**, not your main 
 - YouTube and Instagram actively fight downloaders, so they break more often than TikTok.
 - Slideshows are parsed from TikTok's web page, which can change without notice.
 - Platforms change things often — if downloads break, run `pip install -U "yt-dlp[default]"`.
-- Cache is in memory and resets on restart.
 
 ## Disclaimer
 
@@ -126,5 +128,7 @@ Use a separate (throwaway) account for cookies, never your main one: platforms m
 **YouTube: "Sign in to confirm your age"** — the video is age-restricted. It needs cookies from an 18+ account; in the EU, YouTube may also ask that account to verify its age. Age-restricted Shorts are rare.
 
 **Downloads suddenly break everywhere** — the platform changed something. Update the downloaders: `start.bat update`, or `pip install -U -r requirements.txt`. If yt-dlp fails on an Instagram Reel, the bot automatically retries with gallery-dl.
+
+**TikTok: "This post may not be comfortable for some audiences"** — TikTok hides some posts from logged-out viewers. Save cookies from an 18+ TikTok account as `cookies/tiktok.txt`.
 
 **Can't be fixed on the bot's side:** private or deleted posts, and videos blocked in your country.
