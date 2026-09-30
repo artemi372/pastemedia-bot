@@ -6,10 +6,16 @@ rem   start.bat update   - update dependencies (yt-dlp etc.), then run
 rem UTF-8 console, so Russian/Estonian text and emoji in logs show up.
 chcp 65001 >nul
 set PYTHONUTF8=1
-title pastemedia-bot
 
+rem === Look of this window: black background, aqua text ===
+rem Colour codes: first digit = background, second = text (0-9, A-F). 0B = black + aqua.
+title TIKTOK DOWNLOADER BOT
+color 0B
 rem Always work from the folder this file is in.
 cd /d "%~dp0"
+
+cls
+type "%~dp0banner.txt"
 
 if not exist ".env" (
     echo [!] .env not found.
