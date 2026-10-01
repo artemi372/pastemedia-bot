@@ -94,6 +94,10 @@ load_dotenv()
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 # Private channel where the bot is an admin, id like -100...
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
+# Telegram user id of the bot's owner (optional). Only the owner can
+# stop or restart the bot with /stop and /restart in private chat,
+# which is handy when it runs as a service with no terminal.
+OWNER_ID = int(os.environ.get("OWNER_ID") or 0)
 
 REPO_URL = "https://github.com/artemi372/pastemedia-bot"
 # Telegram username of the author, shown in /start, /help and the
@@ -1379,6 +1383,34 @@ async def on_help(msg: Message, bot: Bot):
     )
 
 
+@router.message(Command("stop", "restart"), private)
+async def on_owner_command(msg: Message, dispatcher: Dispatcher):
+    """Stop or restart the bot on the owner's command.
+
+    "/stop quiet" and "/restart quiet" skip the messages in groups,
+    like the console commands. Everyone else gets the usual hint, as
+    if the command didn't exist.
+    """
+    user_id = msg.from_user.id if msg.from_user else 0
+    if not OWNER_ID or user_id != OWNER_ID:
+        if not OWNER_ID:
+            logging.info(
+                "/stop from %s ignored: set OWNER_ID=%s in .env if it's you",
+                user_id,
+                user_id,
+            )
+        await on_other(msg)
+        return
+    cmd = (msg.text or "").split()[0].lstrip("/").split("@")[0].lower()
+    quiet = "quiet" in (msg.text or "").lower().split()[1:]
+    lang = lang_of(msg.from_user)
+    text = t(lang, "owner_restart" if cmd == "restart" else "owner_stop")
+    if quiet:
+        text += t(lang, "owner_quiet")
+    await msg.answer(text)
+    request_stop(dispatcher, cmd, quiet)
+
+
 @router.message(private)
 async def on_other(msg: Message):
     """Hint that a link is expected in private chat."""
@@ -1425,13 +1457,18 @@ async def on_group_link(msg: Message, bot: Bot):
     logging.info(
         "group %s: %s link, cleanup=%s", msg.chat.id, platform_of(url), mode
     )
-    key = await asyncio.to_thread(media_key, url)
+    # In groups with topics, repeats are looked for in the same topic:
+    # a reply can't point to a message in another one.
+    thread = msg.message_thread_id if msg.is_topic_message else None
+    key = f"{thread or 0}:" + await asyncio.to_thread(media_key, url)
     earlier = earlier_post(msg.chat.id, key)
     if earlier and await point_to_earlier(bot, msg, earlier, mode, lang):
         return
     await react(bot, msg, REACTION_WORKING)
     try:
-        async with ChatActionSender.upload_video(bot=bot, chat_id=msg.chat.id):
+        async with ChatActionSender.upload_video(
+            bot=bot, chat_id=msg.chat.id, message_thread_id=thread
+        ):
             sent_id = await reply_with_media(
                 bot,
                 msg,
@@ -1835,11 +1872,18 @@ async def post_restart_notices(bot: Bot, key: str = "restarting"):
             # The group became a supergroup while the bot wasn't
             # looking; the notice goes there next time.
             move_chat(chat_id, e.migrate_to_chat_id)
-        except (TelegramForbiddenError, TelegramBadRequest) as e:
-            # Kicked, group deleted, or no right to write: no point
-            # in trying again.
+        except TelegramForbiddenError as e:
+            # Kicked or the group is deleted: no point in trying again.
             logging.warning("dropping group %s: %s", chat_id, e)
             state["groups"].pop(chat_id, None)
+        except TelegramBadRequest as e:
+            # E.g. the "General" topic is closed, or the bot can't
+            # write right now; the group may still use the bot.
+            if "chat not found" in str(e).lower():
+                logging.warning("dropping group %s: %s", chat_id, e)
+                state["groups"].pop(chat_id, None)
+            else:
+                logging.warning("no notice in %s: %s", chat_id, e)
         except Exception:
             logging.exception("couldn't post restart notice to %s", chat_id)
         # Stay well under Telegram's rate limits.
@@ -1964,6 +2008,25 @@ async def on_shutdown(bot: Bot):
         await set_profile_status(bot, online=False)
 
 
+def request_stop(dp: Dispatcher, cmd: str, quiet: bool):
+    """Stop polling for "stop" or "restart", from the console or chat.
+
+    Must be called in the event loop. Polling is stopped in a separate
+    task, so a handler that asks for it can finish first.
+    """
+    global stop_mode, quiet_stop
+    stop_mode = "restart" if cmd == "restart" else "shutdown"
+    quiet_stop = quiet
+    logging.info(
+        "%s%s...",
+        "restarting" if cmd == "restart" else "stopping",
+        " quietly" if quiet else "",
+    )
+    task = asyncio.get_running_loop().create_task(dp.stop_polling())
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
 def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
     """Read commands from the terminal in a background thread.
 
@@ -1978,7 +2041,6 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
         Adding "quiet" ("stop quiet", "restart quiet") skips the
         messages in groups.
         """
-        global stop_mode, quiet_stop
         while True:
             try:
                 words = input().strip().lower().split()
@@ -1991,14 +2053,9 @@ def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
             if cmd in ("stop", "exit", "quit", "restart") and flags <= {
                 "quiet"
             }:
-                stop_mode = "restart" if cmd == "restart" else "shutdown"
-                quiet_stop = "quiet" in flags
-                logging.info(
-                    "%s%s...",
-                    "restarting" if cmd == "restart" else "stopping",
-                    " quietly" if quiet_stop else "",
+                loop.call_soon_threadsafe(
+                    request_stop, dp, cmd, "quiet" in flags
                 )
-                asyncio.run_coroutine_threadsafe(dp.stop_polling(), loop)
                 return
             print(
                 "Unknown command. Available: stop, restart "
@@ -2035,6 +2092,13 @@ async def main():
     dp.include_router(router)
     load_state()
     load_media_cache()
+    logging.info(
+        "data folder: %s (cookies: %s)",
+        os.getcwd(),
+        ", ".join(sorted(os.listdir(COOKIES_DIR)))
+        if os.path.isdir(COOKIES_DIR)
+        else "none",
+    )
     keep_awake()
     dp.startup.register(on_startup)
     # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
@@ -2074,6 +2138,10 @@ def supervise() -> int:
 
 
 if __name__ == "__main__":
+    # state.json, media_cache.json and cookies/ live next to bot.py,
+    # wherever the bot is started from (a service manager may start it
+    # in "/").
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     if os.environ.get(CHILD_ENV):
         asyncio.run(main())
         sys.exit(RESTART_EXIT_CODE if stop_mode == "restart" else 0)

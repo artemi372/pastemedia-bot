@@ -64,6 +64,9 @@ TEXTS = {
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
         "shutting_down": "🌙 The bot is off for now, back later.",
+        "owner_stop": "🌙 Shutting down.",
+        "owner_restart": "🔄 Restarting, back in a few seconds.",
+        "owner_quiet": " Groups won't be notified.",
         "cmd_group_notices": "Restart notices on/off (admins)",
         "choose_notices": "Should I post here when I restart or shut down?",
         "notices_now_on": "Now: 🔔 on",
@@ -196,6 +199,9 @@ TEXTS = {
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
         ),
         "shutting_down": "🌙 Бот выключен, вернусь позже.",
+        "owner_stop": "🌙 Выключаюсь.",
+        "owner_restart": "🔄 Перезапускаюсь, вернусь через пару секунд.",
+        "owner_quiet": " Группам ничего не пишу.",
         "cmd_group_notices": "Уведомления о рестарте (админы)",
         "choose_notices": (
             "Писать сюда, когда я перезапускаюсь или выключаюсь?"
@@ -332,6 +338,9 @@ TEXTS = {
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
         ),
         "shutting_down": "🌙 Bot on välja lülitatud, tulen hiljem tagasi.",
+        "owner_stop": "🌙 Lülitun välja.",
+        "owner_restart": "🔄 Taaskäivitun, olen paari sekundi pärast tagasi.",
+        "owner_quiet": " Gruppidele ei kirjuta.",
         "cmd_group_notices": "Taaskäivituse teated (adminid)",
         "choose_notices": (
             "Kas teatada siin, kui ma taaskäivitun või välja lülitun?"
