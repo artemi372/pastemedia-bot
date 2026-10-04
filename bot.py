@@ -123,6 +123,9 @@ UPLOAD_TIMEOUT = 300
 # not older than RECENT_MAX_AGE seconds, is posted again, the bot
 # points to the earlier message instead of sending it once more.
 RECENT_LIMIT = 50
+# Max length of the sender's comment copied under the media. Telegram
+# allows 1024 characters in a caption; the rest is the link and sender.
+COMMENT_LIMIT = 700
 RECENT_MAX_AGE = 7 * 24 * 60 * 60
 
 # How the bot is being stopped: "shutdown" (off for a while, the
@@ -1225,9 +1228,31 @@ def sender_mention(user: User | None) -> str:
     return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 
-def cleanup_caption(mode: str, lang: str, url: str, user: User | None):
-    """Build the caption for a /cleanup mode, or None if it has none."""
+def url_of(msg: Message) -> str:
+    """Return the first supported link in a message ("" if none)."""
+    m = LINK_RE.search(msg.text or "")
+    return m.group(0) if m else ""
+
+
+def link_comment(text: str, url: str) -> str:
+    """Return what the sender wrote around the link, if anything."""
+    comment = " ".join(text.replace(url, " ").split())
+    if len(comment) > COMMENT_LIMIT:
+        comment = comment[: COMMENT_LIMIT - 1].rstrip() + "…"
+    return comment
+
+
+def cleanup_caption(
+    mode: str, lang: str, url: str, user: User | None, comment: str = ""
+):
+    """Build the caption for a /cleanup mode, or None if it has none.
+
+    In the modes that delete the link message, the sender's own words
+    go first, so they aren't lost with it.
+    """
     parts = []
+    if comment and mode != "keep":
+        parts.append(t(lang, "comment_line", text=html.escape(comment)))
     if mode == "link_user":
         parts.append(t(lang, "link_line", link=html.escape(url)))
     if mode in ("link_user", "user"):
@@ -1474,7 +1499,13 @@ async def on_group_link(msg: Message, bot: Bot):
                 msg,
                 url,
                 as_reply=mode == "keep",
-                caption=cleanup_caption(mode, lang, url, msg.from_user),
+                caption=cleanup_caption(
+                    mode,
+                    lang,
+                    url,
+                    msg.from_user,
+                    link_comment(msg.text, url),
+                ),
             )
     except Exception as e:
         logging.exception("download failed: %s", url)
@@ -1525,7 +1556,9 @@ async def point_to_earlier(
     logging.info(
         "group %s: repeated link, pointed to %s", msg.chat.id, earlier
     )
-    if mode != "keep":
+    # A repeat with a comment stays: the media isn't sent again, so the
+    # words would have nowhere to go.
+    if mode != "keep" and not link_comment(msg.text or "", url_of(msg)):
         try:
             await msg.delete()
         except Exception as e:

@@ -119,6 +119,7 @@ TEXTS = {
         ),
         "already_posted_anon": "🔁 This one was already posted, here it is.",
         "link_line": "🔗 {link}",
+        "comment_line": "💬 {text}",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
             "TikTok without watermark, YouTube Shorts and Instagram Reels: "
@@ -259,6 +260,7 @@ TEXTS = {
         "already_posted": "🔁 {user}, это уже скидывали, вот оно.",
         "already_posted_anon": "🔁 Это уже скидывали, вот оно.",
         "link_line": "🔗 {link}",
+        "comment_line": "💬 {text}",
         "restarting": "🔄 Бот перезагружается, скоро вернусь!",
         "bot_short_description": (
             "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
@@ -395,6 +397,7 @@ TEXTS = {
         "already_posted": "🔁 {user}, see oli juba siin, vaata siit.",
         "already_posted_anon": "🔁 See oli juba siin, vaata siit.",
         "link_line": "🔗 {link}",
+        "comment_line": "💬 {text}",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
             "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "

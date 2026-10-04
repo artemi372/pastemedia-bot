@@ -32,7 +32,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 | `/notices` | group: restart and shutdown messages on/off | group admins |
 | `/cleanup` | group: what to do with the message that has the link | group admins |
 
-`/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. If the download fails, the message is never deleted.
+`/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. Whatever the sender wrote next to the link ("lol look at this") is copied under the media as 💬, so it isn't lost. If the download fails, the message is never deleted.
 
 If someone posts a video that was already sent in the group (one of the last 50, within a week), the bot doesn't send it again: it replies to the earlier video with "🔁 already posted". Short and full links to the same post count as the same video.
 
