@@ -61,6 +61,7 @@ TEXTS = {
         ),
         "status_online": "🟢 Online",
         "status_offline": "🔴 Offline",
+        "author_short": "by @{author}",
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
         "shutting_down": "🌙 The bot is off for now, back later.",
@@ -122,8 +123,8 @@ TEXTS = {
         "comment_line": "💬 {text}",
         "restarting": "🔄 The bot is restarting, back in a moment!",
         "bot_short_description": (
-            "TikTok without watermark, YouTube Shorts and Instagram Reels: "
-            "inline, in private chat and in groups."
+            "TikTok without watermark, YouTube Shorts, Instagram Reels: "
+            "inline, in DMs and groups."
         ),
         "bot_description": (
             "📥 Short videos right in Telegram: TikTok without watermark, "
@@ -195,6 +196,7 @@ TEXTS = {
         ),
         "status_online": "🟢 Работает",
         "status_offline": "🔴 Выключен",
+        "author_short": "автор @{author}",
         "slow": "⏳ Это занимает больше времени, чем обычно…",
         "timeout": (
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
@@ -335,6 +337,7 @@ TEXTS = {
         ),
         "status_online": "🟢 Töötab",
         "status_offline": "🔴 Väljas",
+        "author_short": "autor @{author}",
         "slow": "⏳ See võtab tavapärasest kauem aega…",
         "timeout": (
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
@@ -400,8 +403,8 @@ TEXTS = {
         "comment_line": "💬 {text}",
         "restarting": "🔄 Bot taaskäivitub, olen kohe tagasi!",
         "bot_short_description": (
-            "TikTok ilma vesimärgita, YouTube Shorts ja Instagram Reels: "
-            "inline, privaatselt ja gruppides."
+            "TikTok ilma vesimärgita, YouTube Shorts, Instagram Reels: "
+            "inline, privaatselt ja grupis."
         ),
         "bot_description": (
             "📥 Lühivideod otse Telegramis: TikTok ilma vesimärgita, YouTube "

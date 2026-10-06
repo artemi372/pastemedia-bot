@@ -2,7 +2,7 @@
 
 Telegram bot that downloads short videos and posts: **TikTok** without watermark, **YouTube Shorts**, **Instagram** Reels and posts.
 
-Made by [@olidajadolidmajad](https://t.me/olidajadolidmajad) · try it: [@pastetiktok_bot](https://t.me/pastetiktok_bot)
+Made by [@artemi372](https://t.me/artemi372) · try it: [@pastetiktok_bot](https://t.me/pastetiktok_bot)
 
 > [!WARNING]
 > **This project is vibe-coded.** It was written with heavy help from AI and hasn't been
@@ -139,4 +139,4 @@ Use a separate (throwaway) account for cookies, never your main one: platforms m
 
 ## Author
 
-[@olidajadolidmajad](https://t.me/olidajadolidmajad) on Telegram — questions, bugs and ideas are welcome there or in [Issues](https://github.com/artemi372/pastemedia-bot/issues).
+[@artemi372](https://t.me/artemi372) on Telegram — questions, bugs and ideas are welcome there or in [Issues](https://github.com/artemi372/pastemedia-bot/issues).

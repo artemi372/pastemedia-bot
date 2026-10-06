@@ -23,7 +23,7 @@ photo album in private chats and groups. In inline mode they are
 rendered into an mp4 (images + original music) with ffmpeg, because an
 inline message can hold only one media item, not an album.
 
-Author: @olidajadolidmajad on Telegram.
+Author: @artemi372 on Telegram.
 Source code: https://github.com/artemi372/pastemedia-bot
 """
 
@@ -102,7 +102,7 @@ OWNER_ID = int(os.environ.get("OWNER_ID") or 0)
 REPO_URL = "https://github.com/artemi372/pastemedia-bot"
 # Telegram username of the author, shown in /start, /help and the
 # bot profile.
-AUTHOR = "olidajadolidmajad"
+AUTHOR = "artemi372"
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
@@ -2015,8 +2015,10 @@ async def set_profile_status(bot: Bot, online: bool):
                 language_code=lang_code,
             )
             short = t(code, "bot_short_description")
+            author = t(code, "author_short", author=AUTHOR)
             await bot.set_my_short_description(
-                fit(status + " · " + short, 120), language_code=lang_code
+                fit(f"{status} · {short} · {author}", 120),
+                language_code=lang_code,
             )
     except Exception:
         logging.exception("couldn't update the profile status")
