@@ -66,6 +66,33 @@ TEXTS = {
         "timeout": "❌ The download took too long. Please try again later.",
         "shutting_down": "🌙 The bot is off for now, back later.",
         "owner_stop": "🌙 Shutting down.",
+        "moved_notice": (
+            "🔁 I'm moving to a new bot: @{bot}\n"
+            "\n"
+            "Admins, add it to this group with the button below (it asks for"
+            ' the "Delete messages" right, needed for /cleanup). I\'m'
+            " leaving now. The group settings carry over."
+        ),
+        "moved_button": "➕ Add @{bot}",
+        "moved_profile": "➡️ This bot has moved to @{bot}",
+        "migrate_usage": (
+            "Usage: /migrate @new_bot (then /migrate @new_bot yes)"
+        ),
+        "migrate_confirm": (
+            "This will post a message pointing to @{bot} in {count} groups"
+            " and leave all of them, then shut the bot down.\n"
+            "\n"
+            "Make sure @{bot} exists. To go ahead, send:\n"
+            "<code>/migrate @{bot} yes</code>"
+        ),
+        "migrate_started": "🔁 Moving {count} groups…",
+        "migrate_done": (
+            "✅ Done: left {left} of {count} groups, the profile points to"
+            " @{bot}. Shutting down.\n"
+            "\n"
+            "Next: put the new token in .env, delete media_cache.json, make"
+            " @{bot} an admin of the storage channel, start the bot."
+        ),
         "owner_restart": "🔄 Restarting, back in a few seconds.",
         "owner_quiet": " Groups won't be notified.",
         "cmd_group_notices": "Restart notices on/off (admins)",
@@ -203,6 +230,33 @@ TEXTS = {
         ),
         "shutting_down": "🌙 Бот выключен, вернусь позже.",
         "owner_stop": "🌙 Выключаюсь.",
+        "moved_notice": (
+            "🔁 Я переезжаю в нового бота: @{bot}\n"
+            "\n"
+            "Админы, добавьте его в группу кнопкой ниже (она сразу просит"
+            " право «Удаление сообщений», оно нужно для /cleanup). Я"
+            " выхожу из группы. Настройки группы сохранятся."
+        ),
+        "moved_button": "➕ Добавить @{bot}",
+        "moved_profile": "➡️ Бот переехал: @{bot}",
+        "migrate_usage": (
+            "Как: /migrate @new_bot (потом /migrate @new_bot yes)"
+        ),
+        "migrate_confirm": (
+            "Бот напишет в {count} групп, что переезжает в @{bot}, выйдет"
+            " из всех и выключится.\n"
+            "\n"
+            "Проверь, что @{bot} существует. Чтобы начать, отправь:\n"
+            "<code>/migrate @{bot} yes</code>"
+        ),
+        "migrate_started": "🔁 Переезжаю из {count} групп…",
+        "migrate_done": (
+            "✅ Готово: вышел из {left} из {count} групп, профиль указывает"
+            " на @{bot}. Выключаюсь.\n"
+            "\n"
+            "Дальше: новый токен в .env, удали media_cache.json, сделай"
+            " @{bot} админом storage-канала и запусти бота."
+        ),
         "owner_restart": "🔄 Перезапускаюсь, вернусь через пару секунд.",
         "owner_quiet": " Группам ничего не пишу.",
         "cmd_group_notices": "Уведомления о рестарте (админы)",
@@ -344,6 +398,33 @@ TEXTS = {
         ),
         "shutting_down": "🌙 Bot on välja lülitatud, tulen hiljem tagasi.",
         "owner_stop": "🌙 Lülitun välja.",
+        "moved_notice": (
+            "🔁 Kolin uude botti: @{bot}\n"
+            "\n"
+            "Adminid, lisage see gruppi alloleva nupuga (see küsib kohe"
+            " õigust „Sõnumite kustutamine“, mida /cleanup vajab). Ma"
+            " lahkun grupist. Grupi seaded jäävad alles."
+        ),
+        "moved_button": "➕ Lisa @{bot}",
+        "moved_profile": "➡️ Bot kolis: @{bot}",
+        "migrate_usage": (
+            "Kasutus: /migrate @new_bot (siis /migrate @new_bot yes)"
+        ),
+        "migrate_confirm": (
+            "Bot kirjutab {count} gruppi, et kolib @{bot} juurde, lahkub"
+            " neist kõigist ja lülitub välja.\n"
+            "\n"
+            "Veendu, et @{bot} on olemas. Alustamiseks saada:\n"
+            "<code>/migrate @{bot} yes</code>"
+        ),
+        "migrate_started": "🔁 Kolin {count} grupist…",
+        "migrate_done": (
+            "✅ Valmis: lahkusin {left} grupist {count}-st, profiil viitab"
+            " @{bot} peale. Lülitun välja.\n"
+            "\n"
+            "Edasi: uus token .env-i, kustuta media_cache.json, tee @{bot}"
+            " salvestuskanali adminiks ja käivita bot."
+        ),
         "owner_restart": "🔄 Taaskäivitun, olen paari sekundi pärast tagasi.",
         "owner_quiet": " Gruppidele ei kirjuta.",
         "cmd_group_notices": "Taaskäivituse teated (adminid)",

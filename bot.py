@@ -210,6 +210,8 @@ state: dict[str, dict[str, Any]] = {
     "restart_notices": {},
     # chat id -> {media key: [message id, unix time]}, oldest first.
     "recent": {},
+    # Set by /migrate: {"from": old bot username, "to": new one}.
+    "moved": {},
 }
 
 
@@ -1436,6 +1438,79 @@ async def on_owner_command(msg: Message, dispatcher: Dispatcher):
     request_stop(dispatcher, cmd, quiet)
 
 
+USERNAME_RE = re.compile(r"@?([A-Za-z][A-Za-z0-9_]{3,31})")
+
+
+def moved_keyboard(new_bot: str, lang: str) -> InlineKeyboardMarkup:
+    """Build the button that adds the new bot to a group as an admin.
+
+    The link opens the group picker and asks for the "Delete messages"
+    right right away, so /cleanup keeps working.
+    """
+    button = InlineKeyboardButton(
+        text=t(lang, "moved_button", bot=new_bot),
+        url=f"https://t.me/{new_bot}?startgroup=true&admin=delete_messages",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+
+
+@router.message(Command("migrate"), private)
+async def on_migrate(msg: Message, bot: Bot, dispatcher: Dispatcher):
+    """Move all groups to a new bot and leave them (owner only).
+
+    "/migrate @new_bot" only shows what will happen; "/migrate @new_bot
+    yes" does it: every group gets a message with a button that adds
+    the new bot, then this bot leaves. The profile says where the bot
+    moved, and the bot shuts down quietly. The group settings stay in
+    state.json for the new bot.
+    """
+    if not OWNER_ID or not msg.from_user or msg.from_user.id != OWNER_ID:
+        await on_other(msg)
+        return
+    lang = lang_of(msg.from_user)
+    args = (msg.text or "").split()[1:]
+    m = USERNAME_RE.fullmatch(args[0]) if args else None
+    me = await bot.me()
+    if not m or m.group(1).lower() == (me.username or "").lower():
+        await msg.answer(t(lang, "migrate_usage"))
+        return
+    new_bot = m.group(1)
+    groups = list(state["groups"].items())
+    if [a.lower() for a in args[1:]] != ["yes"]:
+        await msg.answer(
+            t(lang, "migrate_confirm", bot=new_bot, count=len(groups))
+        )
+        return
+
+    await msg.answer(t(lang, "migrate_started", count=len(groups)))
+    left = 0
+    for chat_id, group_lang_code in groups:
+        code = state["chats"].get(chat_id, {}).get("lang") or group_lang_code
+        try:
+            await bot.send_message(
+                int(chat_id),
+                t(code, "moved_notice", bot=new_bot),
+                reply_markup=moved_keyboard(new_bot, code),
+            )
+        except Exception as e:
+            logging.warning("no move notice in %s: %s", chat_id, e)
+        try:
+            await bot.leave_chat(int(chat_id))
+            left += 1
+        except Exception as e:
+            logging.warning("couldn't leave %s: %s", chat_id, e)
+        state["groups"].pop(chat_id, None)
+        await asyncio.sleep(0.1)  # stay under Telegram's rate limits
+    state["moved"] = {"from": me.username, "to": new_bot}
+    state["restart_notices"] = {}
+    save_state()
+    await set_profile_status(bot, online=False)
+    await msg.answer(
+        t(lang, "migrate_done", bot=new_bot, left=left, count=len(groups))
+    )
+    request_stop(dispatcher, "stop", quiet=True)
+
+
 @router.message(private)
 async def on_other(msg: Message):
     """Hint that a link is expected in private chat."""
@@ -2004,6 +2079,10 @@ async def set_profile_status(bot: Bot, online: bool):
     status_key = "status_online" if online else "status_offline"
     try:
         me = await bot.me()
+        moved = state["moved"]
+        if moved and moved.get("from") == me.username:
+            await show_moved_profile(bot, moved["to"])
+            return
         for code in TEXTS:
             lang_code = None if code == DEFAULT_LANG else code
             status = t(code, status_key)
@@ -2024,8 +2103,28 @@ async def set_profile_status(bot: Bot, online: bool):
         logging.exception("couldn't update the profile status")
 
 
+async def show_moved_profile(bot: Bot, new_bot: str):
+    """Point everyone who opens the old bot's profile to the new one."""
+    for code in TEXTS:
+        lang_code = None if code == DEFAULT_LANG else code
+        text = t(code, "moved_profile", bot=new_bot)
+        await bot.set_my_description(fit(text, 512), language_code=lang_code)
+        await bot.set_my_short_description(
+            fit(text, 120), language_code=lang_code
+        )
+
+
 async def on_startup(bot: Bot):
-    """Clean up after the previous run and show the bot as online."""
+    """Clean up after the previous run and show the bot as online.
+
+    After /migrate, the state belongs to the new bot: the "moved" mark
+    is dropped, and the old bot's notices can't be deleted anyway.
+    """
+    me = await bot.me()
+    if state["moved"] and state["moved"].get("from") != me.username:
+        logging.info("moved from @%s, starting fresh", state["moved"]["from"])
+        state["moved"] = {}
+        save_state()
     await delete_restart_notices(bot)
     await set_profile_status(bot, online=True)
 

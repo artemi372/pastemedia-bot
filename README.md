@@ -89,6 +89,8 @@ Group admins can turn these messages off for their group with `/notices`.
 
 **Running as a service (no terminal):** set `OWNER_ID` in `.env` to your Telegram user id (e.g. from [@userinfobot](https://t.me/userinfobot)), then send the bot `/stop` or `/restart` (optionally with `quiet`) in private chat. Only the owner can use them; for everyone else they don't exist. If `OWNER_ID` isn't set, the log shows the id of whoever tried. With systemd, use `Restart=on-failure`: `Restart=always` would start the bot again right after `/stop`.
 
+**Moving to a new bot** (e.g. for a new username): the owner sends `/migrate @new_bot` to the old bot, checks the preview, then `/migrate @new_bot yes`. Every group gets a message with an "Add @new_bot" button (it asks for the *Delete messages* right), the old bot leaves all groups, its profile starts saying where it moved, and it shuts down. Then put the new token in `.env`, delete `media_cache.json` (file IDs only work for the bot that uploaded them), make the new bot an admin of the storage channel and start it. Group settings in `state.json` carry over once admins add the new bot.
+
 Use these instead of closing the window or the PyCharm Stop button: those kill the bot before it can post notices or update its status.
 
 The bot shows its status in its Telegram profile: 🟢 Online while running, 🔴 Offline after a normal stop.
