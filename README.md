@@ -77,8 +77,6 @@ cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
 python bot.py
 ```
 
-On Windows you can just double-click **`start.bat`**: it creates `.venv`, installs dependencies on the first run and starts the bot. `start.bat update` also updates dependencies (e.g. yt-dlp) before starting.
-
 Commands in the terminal where the bot runs:
 
 - `stop` (or Ctrl+C) — shut the bot down; groups get "🌙 The bot is off for now, back later" and the profile shows 🔴 Offline
@@ -133,7 +131,7 @@ Use a separate (throwaway) account for cookies, never your main one: platforms m
 
 **YouTube: "Sign in to confirm your age"** — the video is age-restricted. It needs cookies from an 18+ account; in the EU, YouTube may also ask that account to verify its age. Age-restricted Shorts are rare.
 
-**Downloads suddenly break everywhere** — the platform changed something. Update the downloaders: `start.bat update`, or `pip install -U -r requirements.txt`. If yt-dlp fails on an Instagram Reel, the bot automatically retries with gallery-dl.
+**Downloads suddenly break everywhere** — the platform changed something. Update the downloaders: `pip install -U -r requirements.txt`. If yt-dlp fails on an Instagram Reel, the bot automatically retries with gallery-dl.
 
 **TikTok: "This post may not be comfortable for some audiences"** — TikTok hides some posts from logged-out viewers. Save cookies from an 18+ TikTok account as `cookies/tiktok.txt`.
 
