@@ -1354,7 +1354,9 @@ async def on_start(msg: Message, bot: Bot):
         text=t(lang, "try_button"), switch_inline_query=""
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[try_button]])
-    text = t(lang, "start", bot=me.username) + credits(lang)
+    text = (
+        t(lang, "start", bot=me.username) + legal_links(lang) + credits(lang)
+    )
     # No big GitHub preview card under the greeting.
     await msg.answer(
         text,
