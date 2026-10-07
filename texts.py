@@ -105,6 +105,27 @@ TEXTS = {
         "notices_set_off": "🔕 Restart and shutdown notices are off.",
         "source_line": "\n\n👤 Author: @{author}\n🧩 Open source: {repo}",
         "cmd_help": "Help and commands",
+        "cmd_privacy": "Privacy and terms",
+        "legal_links": "\n\n📄 {links}",
+        "terms_name": "Terms of Use",
+        "privacy_name": "Privacy Policy",
+        "privacy_text": (
+            "🔒 <b>Privacy</b>\n\n"
+            "The bot keeps only what it needs: your Telegram ID and language"
+            " if you changed it, group IDs and settings, and copies of"
+            " downloaded videos with their links in a private channel."
+            " Names, phone numbers and message texts are not stored. Data is"
+            " never sold or shared."
+        ),
+        "terms_text": (
+            "📜 <b>Terms of Use</b>\n\n"
+            "The bot is free and provided as is, with no guarantees. You are"
+            " responsible for the links you send: only share what you're"
+            " allowed to, nothing illegal, no spam. With /cleanup, your"
+            " comment next to a link is reposted under the video."
+        ),
+        "legal_read": '\n\nFull text: <a href="{url}">{name}</a>',
+        "legal_contact": ("\nQuestions, data or copy removal: @{author}"),
         "cmd_group_cleanup": "What to do with link messages (admins)",
         "help": (
             "<b>How to use</b>\n"
@@ -119,7 +140,8 @@ TEXTS = {
             "/language — in private: your language (everyone); in groups: the "
             "group language (admins)\n"
             "/notices — restart and shutdown messages in the group (admins)\n"
-            "/cleanup — what to do with link messages in the group (admins)"
+            "/cleanup — what to do with link messages in the group (admins)\n"
+            "/privacy, /terms — privacy policy and terms of use (everyone)"
         ),
         "choose_cleanup": (
             "What should I do with the message that has the link, once the "
@@ -275,6 +297,29 @@ TEXTS = {
         ),
         "source_line": "\n\n👤 Автор: @{author}\n🧩 Исходный код: {repo}",
         "cmd_help": "Помощь и команды",
+        "cmd_privacy": "Конфиденциальность и правила",
+        "legal_links": "\n\n📄 {links}",
+        "terms_name": "Правила",
+        "privacy_name": "Конфиденциальность",
+        "privacy_text": (
+            "🔒 <b>Конфиденциальность</b>\n\n"
+            "Бот хранит только нужное для работы: твой Telegram ID и язык,"
+            " если ты его менял, ID и настройки групп, а также копии"
+            " скачанных видео со ссылками в закрытом канале. Имена, телефоны"
+            " и тексты сообщений не сохраняются. Данные никому не продаются"
+            " и не передаются."
+        ),
+        "terms_text": (
+            "📜 <b>Правила</b>\n\n"
+            "Бот бесплатный и работает «как есть», без гарантий. За ссылки"
+            " отвечаешь ты: кидай только то, что можно, ничего незаконного,"
+            " без спама. При /cleanup твой комментарий к ссылке публикуется"
+            " под видео."
+        ),
+        "legal_read": (
+            '\n\nПолный текст (на английском): <a href="{url}">{name}</a>'
+        ),
+        "legal_contact": ("\nВопросы, удаление данных или копий: @{author}"),
         "cmd_group_cleanup": "Что делать с сообщениями-ссылками (админы)",
         "help": (
             "<b>Как пользоваться</b>\n"
@@ -291,7 +336,8 @@ TEXTS = {
             "(админам)\n"
             "/notices — сообщения о перезапуске и выключении в группе "
             "(админам)\n"
-            "/cleanup — что делать с сообщениями-ссылками в группе (админам)"
+            "/cleanup — что делать с сообщениями-ссылками в группе (админам)\n"
+            "/privacy, /terms — конфиденциальность и правила (всем)"
         ),
         "choose_cleanup": (
             "Что делать с сообщением со ссылкой, когда видео отправлено?"
@@ -443,6 +489,31 @@ TEXTS = {
         ),
         "source_line": "\n\n👤 Autor: @{author}\n🧩 Lähtekood: {repo}",
         "cmd_help": "Abi ja käsud",
+        "cmd_privacy": "Privaatsus ja tingimused",
+        "legal_links": "\n\n📄 {links}",
+        "terms_name": "Kasutustingimused",
+        "privacy_name": "Privaatsuspoliitika",
+        "privacy_text": (
+            "🔒 <b>Privaatsus</b>\n\n"
+            "Bot hoiab ainult vajalikku: sinu Telegrami ID ja keele, kui"
+            " seda muutsid, gruppide ID-d ja seaded ning allalaaditud"
+            " videote koopiad koos linkidega privaatses kanalis. Nimesid,"
+            " telefoninumbreid ja sõnumite teksti ei salvestata. Andmeid ei"
+            " müüda ega jagata."
+        ),
+        "terms_text": (
+            "📜 <b>Kasutustingimused</b>\n\n"
+            "Bot on tasuta ja töötab „nagu on“, ilma garantiideta. Saadetud"
+            " linkide eest vastutad sina: jaga ainult lubatut, mitte midagi"
+            " ebaseaduslikku, mitte rämpsposti. /cleanup puhul avaldatakse"
+            " sinu kommentaar video all."
+        ),
+        "legal_read": (
+            '\n\nTäistekst (inglise keeles): <a href="{url}">{name}</a>'
+        ),
+        "legal_contact": (
+            "\nKüsimused, andmete või koopiate kustutamine: @{author}"
+        ),
         "cmd_group_cleanup": "Mida teha linkidega sõnumitega (adminid)",
         "help": (
             "<b>Kuidas kasutada</b>\n"
@@ -458,7 +529,8 @@ TEXTS = {
             "(adminid)\n"
             "/notices — taaskäivituse ja väljalülitamise teated grupis "
             "(adminid)\n"
-            "/cleanup — mida teha linkidega sõnumitega grupis (adminid)"
+            "/cleanup — mida teha linkidega sõnumitega grupis (adminid)\n"
+            "/privacy, /terms — privaatsus ja kasutustingimused (kõik)"
         ),
         "choose_cleanup": "Mida teha lingiga sõnumiga, kui video on saadetud?",
         "cleanup_keep": "Jäta alles, vasta sellele",

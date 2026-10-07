@@ -59,6 +59,7 @@ from aiogram.filters import (
     LEAVE_TRANSITION,
     ChatMemberUpdatedFilter,
     Command,
+    CommandObject,
     CommandStart,
 )
 from aiogram.types import (
@@ -103,6 +104,15 @@ REPO_URL = "https://github.com/artemi372/pastemedia-bot"
 # Telegram username of the author, shown in /start, /help and the
 # bot profile.
 AUTHOR = "artemi372"
+# Privacy Policy and Terms of Use, required by Telegram's rules for
+# bots. Set PRIVACY_URL / TERMS_URL in .env to point to your own pages
+# when running your own copy; an empty value hides the link.
+PRIVACY_URL = os.environ.get(
+    "PRIVACY_URL", "https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07"
+)
+TERMS_URL = os.environ.get(
+    "TERMS_URL", "https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07"
+)
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
@@ -1220,6 +1230,19 @@ def credits(lang: str) -> str:
     return t(lang, "source_line", author=AUTHOR, repo=REPO_URL)
 
 
+def legal_links(lang: str) -> str:
+    """Return a line with links to the terms and the privacy policy."""
+    links = [
+        f'<a href="{html.escape(url)}">{t(lang, name)}</a>'
+        for url, name in (
+            (TERMS_URL, "terms_name"),
+            (PRIVACY_URL, "privacy_name"),
+        )
+        if url
+    ]
+    return t(lang, "legal_links", links=" · ".join(links)) if links else ""
+
+
 def sender_mention(user: User | None) -> str:
     """Return an HTML mention: @username, or a clickable name."""
     if user is None:
@@ -1404,7 +1427,32 @@ async def on_help(msg: Message, bot: Bot):
         lang = group_lang(msg.chat.id, msg.from_user)
     me = await bot.me()
     await msg.answer(
-        t(lang, "help", bot=me.username) + credits(lang),
+        t(lang, "help", bot=me.username) + legal_links(lang) + credits(lang),
+        disable_notification=is_silent(msg.chat),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+
+
+@router.message(Command("privacy", "terms"))
+async def on_legal(msg: Message, command: CommandObject):
+    """Summarize the privacy policy or the terms, with a link to them.
+
+    Telegram requires bots to have a privacy policy that users can
+    easily find.
+    """
+    if msg.chat.type == ChatType.PRIVATE:
+        lang = lang_of(msg.from_user)
+    else:
+        lang = group_lang(msg.chat.id, msg.from_user)
+    privacy = command.command.lower() == "privacy"
+    url = PRIVACY_URL if privacy else TERMS_URL
+    name = "privacy_name" if privacy else "terms_name"
+    text = t(lang, "privacy_text" if privacy else "terms_text")
+    if url:
+        text += t(lang, "legal_read", url=html.escape(url), name=t(lang, name))
+    text += t(lang, "legal_contact", author=AUTHOR)
+    await msg.answer(
+        text,
         disable_notification=is_silent(msg.chat),
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
@@ -1860,7 +1908,13 @@ async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
     text = t(lang, "group_hello") + t(lang, "group_lang_hint")
     if not me.can_read_all_group_messages and not is_admin:
         text += t(lang, "group_need_access")
-    await bot.send_message(event.chat.id, text, disable_notification=True)
+    text += legal_links(lang)
+    await bot.send_message(
+        event.chat.id,
+        text,
+        disable_notification=True,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
 
 
 @router.my_chat_member(
@@ -2027,6 +2081,7 @@ async def setup_bot_profile(bot: Bot):
             BotCommand(
                 command="language", description=t(code, "cmd_language")
             ),
+            BotCommand(command="privacy", description=t(code, "cmd_privacy")),
         ]
         await bot.set_my_commands(commands, language_code=lang_code)
         # In groups only the admin settings make sense.
@@ -2045,6 +2100,9 @@ async def setup_bot_profile(bot: Bot):
                     description=t(code, "cmd_group_cleanup"),
                 ),
                 BotCommand(command="help", description=t(code, "cmd_help")),
+                BotCommand(
+                    command="privacy", description=t(code, "cmd_privacy")
+                ),
             ],
             scope=BotCommandScopeAllGroupChats(),
             language_code=lang_code,
@@ -2089,8 +2147,14 @@ async def set_profile_status(bot: Bot, online: bool):
             description = t(
                 code, "bot_description", bot=me.username
             ) + credits(code)
+            # The privacy link must stay even if the text is cut.
+            privacy = f"\n🔒 Privacy: {PRIVACY_URL}" if PRIVACY_URL else ""
             await bot.set_my_description(
-                fit(status + "\n\n" + description, 512),
+                fit(
+                    status + "\n\n" + description,
+                    512 - len(privacy.encode("utf-16-le")) // 2,
+                )
+                + privacy,
                 language_code=lang_code,
             )
             short = t(code, "bot_short_description")

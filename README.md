@@ -31,6 +31,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 | `/language` | private chat: your language; group: the group language | everyone / group admins |
 | `/notices` | group: restart and shutdown messages on/off | group admins |
 | `/cleanup` | group: what to do with the message that has the link | group admins |
+| `/privacy`, `/terms` | everywhere: short summary and a link to the full text | everyone |
 
 `/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. Whatever the sender wrote next to the link ("lol look at this") is copied under the media as 💬, so it isn't lost. If the download fails, the message is never deleted.
 
@@ -113,6 +114,10 @@ The bot picks them up automatically. **Use a throwaway account**, not your main 
 - YouTube and Instagram actively fight downloaders, so they break more often than TikTok.
 - Slideshows are parsed from TikTok's web page, which can change without notice.
 - Platforms change things often — if downloads break, run `pip install -U "yt-dlp[default]"`.
+
+## Privacy and terms
+
+The official bot's [Privacy Policy](https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07) and [Terms of Use](https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07) are linked from `/privacy`, `/terms`, `/help` and the bot's profile. Telegram requires every bot to have a privacy policy, so if you run your own copy, publish your own and set `PRIVACY_URL` and `TERMS_URL` in `.env` (an empty value hides the link). Also add the privacy link in @BotFather.
 
 ## Disclaimer
 
