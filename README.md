@@ -32,6 +32,7 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 | `/notices` | group: restart and shutdown messages on/off | group admins |
 | `/cleanup` | group: what to do with the message that has the link | group admins |
 | `/privacy`, `/terms` | everywhere: short summary and a link to the full text | everyone |
+| `/appeal` | private chat: ask to be unbanned | banned users |
 
 `/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. Whatever the sender wrote next to the link ("lol look at this") is copied under the media as 💬, so it isn't lost. If the download fails, the message is never deleted.
 
@@ -87,6 +88,17 @@ Commands in the terminal where the bot runs:
 Group admins can turn these messages off for their group with `/notices`.
 
 **Running as a service (no terminal):** set `OWNER_ID` in `.env` to your Telegram user id (e.g. from [@userinfobot](https://t.me/userinfobot)), then send the bot `/stop` or `/restart` (optionally with `quiet`) in private chat. Only the owner can use them; for everyone else they don't exist. If `OWNER_ID` isn't set, the log shows the id of whoever tried. With systemd, use `Restart=on-failure`: `Restart=always` would start the bot again right after `/stop`.
+
+**Moderation** (owner only). Post these in the **storage channel**, where only you can post, or send them to the bot in private chat (needs `OWNER_ID`):
+
+- `/ban` as a reply to a stored video bans whoever requested it (known for 7 days), or `/ban <user id> [reason]`. A reason starting with `request` marks a ban the user asked for (e.g. under the privacy policy): their settings are deleted, and they can lift it themselves with `/appeal`.
+- `/unban <user id>`
+- `/block` as a reply to a stored video (the one with the link caption), or `/block <link> [reason]`: the post is never downloaded again, its cached copy is forgotten and the stored one deleted. `/unblock <link>` allows it again.
+- `/bans` lists banned users and blocked posts.
+
+In the storage channel, the command and the answer delete themselves after a minute. Banned users get a message with the reason; their links are ignored silently in groups. With `/appeal <why>` they send you an appeal with Unban/Reject buttons, at most once a day.
+
+In groups, the bot ignores links inside long texts (over 200 characters besides the link) or messages with more than two links, so announcements and ads with an Instagram link aren't reposted.
 
 **Moving to a new bot** (e.g. for a new username): the owner sends `/migrate @new_bot` to the old bot, checks the preview, then `/migrate @new_bot yes`. Every group gets a message with an "Add @new_bot" button (it asks for the *Delete messages* right), the old bot leaves all groups, its profile starts saying where it moved, and it shuts down. Then put the new token in `.env`, delete `media_cache.json` (file IDs only work for the bot that uploaded them), make the new bot an admin of the storage channel and start it. Group settings in `state.json` carry over once admins add the new bot.
 

@@ -126,6 +126,17 @@ AUDIO_KBPS = 96
 # is reported as too big instead.
 MIN_VIDEO_KBPS = 400
 COMPRESS_TIMEOUT = 300  # seconds for one ffmpeg run
+# In groups, a link inside a long text is most likely an announcement
+# or an ad, not something to download: skip messages with more text
+# than this around the link, or with more links than this.
+GROUP_TEXT_LIMIT = 200
+GROUP_URL_LIMIT = 2
+# Who requested each upload to the storage channel is kept this long,
+# so the owner can ban whoever downloads forbidden content.
+UPLOADS_MAX_AGE = 7 * 24 * 60 * 60
+UPLOADS_LIMIT = 3000
+APPEAL_COOLDOWN = 24 * 60 * 60  # seconds between appeals of one user
+ADMIN_REPLY_TTL = 60  # seconds before replies in the storage channel go
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
 # standard reaction emoji.
@@ -166,7 +177,12 @@ USER_AGENT = (
 )
 
 PLATFORM_PATTERNS = {
-    "tiktok": r"https?://(?:[\w-]+\.)?tiktok\.com/\S+",
+    # Videos, photo posts and short links, not profiles or sounds.
+    "tiktok": (
+        r"https?://(?:(?:vm|vt)\.tiktok\.com/[\w-]+"
+        r"|(?:www\.|m\.)?tiktok\.com/"
+        r"(?:@[\w.-]+/(?:video|photo)/\d+|t/[\w-]+))\S*"
+    ),
     # Only Shorts: regular YouTube videos rarely fit into 50 MB.
     "youtube": r"https?://(?:www\.|m\.)?youtube\.com/shorts/[\w-]+\S*",
     # Reels and video posts. Links may include the username:
@@ -179,6 +195,10 @@ PLATFORM_PATTERNS = {
 LINK_RE = re.compile(
     "|".join(f"(?:{p})" for p in PLATFORM_PATTERNS.values()), re.I
 )
+# Any link at all, to count them in a message.
+URL_RE = re.compile(r"https?://\S+", re.I)
+# Punctuation that sticks to a link in a sentence: "look (https://...)."
+TRAILING = ".,!?;:)]}>»\"'"
 
 # Optional cookies (Netscape cookies.txt format) for platforms that
 # block anonymous access. Keep this folder out of git: cookies are as
@@ -200,6 +220,8 @@ ALLOWED_UPDATES = [
     "chosen_inline_result",
     "callback_query",
     "my_chat_member",
+    # Owner commands in the storage channel.
+    "channel_post",
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -237,11 +259,22 @@ state: dict[str, dict[str, Any]] = {
     "recent": {},
     # Set by /migrate: {"from": old bot username, "to": new one}.
     "moved": {},
+    # user id -> {"kind": "abuse" or "request", "reason", "at",
+    # "appealed"}; "request" means the user asked not to be processed.
+    "bans": {},
+    # media key -> {"reason", "at"}: posts the bot won't download.
+    "blocked": {},
+    # storage message id -> [user id, unix time]: who requested it.
+    "uploads": {},
 }
 
 
 class TooBigError(RuntimeError):
     """The file exceeds the Bot API upload limit."""
+
+
+class BlockedError(RuntimeError):
+    """The post is on the block list."""
 
 
 class DownloadTimeoutError(RuntimeError):
@@ -289,6 +322,16 @@ def cache_put(kind: str, key: str, value: Any):
     entries[key] = value
     while len(entries) > CACHE_LIMIT:
         del entries[next(iter(entries))]
+    tmp = CACHE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(media_cache, f, ensure_ascii=False)
+    os.replace(tmp, CACHE_FILE)
+
+
+def cache_drop(key: str):
+    """Forget the cached file_ids of a post, so it's never reused."""
+    for kind in media_cache:
+        media_cache[kind].pop(key, None)
     tmp = CACHE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(media_cache, f, ensure_ascii=False)
@@ -397,6 +440,63 @@ def remember_post(chat_id: int, key: str, message_id: int):
     save_state()
 
 
+def ban_of(user: User | int | None) -> dict | None:
+    """Return the ban of a user, or None if they aren't banned."""
+    if user is None:
+        return None
+    user_id = user if isinstance(user, int) else user.id
+    return state["bans"].get(str(user_id))
+
+
+def ban_user(user_id: int, reason: str, kind: str = "abuse"):
+    """Put a user on the ban list.
+
+    kind "request" is for users who asked the bot to stop processing
+    their data: their settings are deleted too, and they can lift the
+    ban themselves with /appeal.
+    """
+    state["bans"][str(user_id)] = {
+        "kind": kind,
+        "reason": reason,
+        "at": int(time.time()),
+    }
+    if kind == "request":
+        state["users"].pop(str(user_id), None)
+    save_state()
+
+
+def unban_user(user_id: int) -> bool:
+    """Remove a user from the ban list; tell whether they were on it."""
+    if state["bans"].pop(str(user_id), None) is None:
+        return False
+    save_state()
+    return True
+
+
+def remember_upload(message_ids: list[int], user_id: int | None):
+    """Save who requested the media uploaded to the storage channel."""
+    if not user_id:
+        return
+    uploads = state["uploads"]
+    now = int(time.time())
+    for message_id in message_ids:
+        uploads[str(message_id)] = [user_id, now]
+    for key in list(uploads):
+        if len(uploads) > UPLOADS_LIMIT or now - uploads[key][1] > (
+            UPLOADS_MAX_AGE
+        ):
+            del uploads[key]
+    save_state()
+
+
+def uploader_of(message_id: int) -> int | None:
+    """Return who requested a storage message, if still known."""
+    entry = state["uploads"].get(str(message_id))
+    if entry and time.time() - entry[1] <= UPLOADS_MAX_AGE:
+        return entry[0]
+    return None
+
+
 # ---------- helpers ----------
 
 
@@ -422,12 +522,14 @@ def group_lang(chat_id: int, user: User | None) -> str:
     return saved if saved in TEXTS else lang_of(user)
 
 
-def delete_later(bot: Bot, chat_id: int, message_id: int):
-    """Delete a message after ERROR_TTL seconds, in the background."""
+def delete_later(
+    bot: Bot, chat_id: int, message_id: int, ttl: float = ERROR_TTL
+):
+    """Delete a message after `ttl` seconds, in the background."""
 
     async def worker():
         """Wait, then delete; the message may already be gone."""
-        await asyncio.sleep(ERROR_TTL)
+        await asyncio.sleep(ttl)
         try:
             await bot.delete_message(chat_id, message_id)
         except Exception as e:
@@ -443,6 +545,8 @@ def error_text(lang: str, e: Exception) -> str:
 
     Technical details go to the log, not to the chat.
     """
+    if isinstance(e, BlockedError):
+        return t(lang, "blocked_content")
     if isinstance(e, TooBigError):
         return t(lang, "too_big")
     # A network error while uploading is almost always a timeout.
@@ -1133,13 +1237,16 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
     raise TooBigError("still larger than 50 MB after compression")
 
 
-async def get_file_id(bot: Bot, url: str) -> str:
+async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
     """Return a Telegram file_id for the video behind a link.
 
     On a cache miss, download the video and upload it to the storage
-    channel first. Different links to one post share the cache entry.
+    channel first, noting who requested it. Different links to one
+    post share the cache entry. Blocked posts raise BlockedError.
     """
     key = await asyncio.to_thread(media_key, url)
+    if key in state["blocked"]:
+        raise BlockedError(key)
     if cached := cache_get("videos", key):
         return cached
     lock = locks.setdefault(key, asyncio.Lock())
@@ -1166,6 +1273,7 @@ async def get_file_id(bot: Bot, url: str) -> str:
             )
         if msg.video is None:
             raise RuntimeError("Telegram didn't return the uploaded video")
+        remember_upload([msg.message_id], user_id)
         cache_put("videos", key, msg.video.file_id)
         return msg.video.file_id
 
@@ -1278,13 +1386,18 @@ async def upload_album_part(
     return await bot.send_media_group(STORAGE_CHAT_ID, media, **common)
 
 
-async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
+async def get_album_items(
+    bot: Bot, url: str, user_id: int | None = None
+) -> list[tuple[str, str]]:
     """Return (kind, file_id) for every photo and video of an album.
 
     On a cache miss, download the files and upload them to the storage
-    channel first. Different links to one post share the cache entry.
+    channel first, noting who requested them. Different links to one
+    post share the cache entry. Blocked posts raise BlockedError.
     """
     key = await asyncio.to_thread(media_key, url)
+    if key in state["blocked"]:
+        raise BlockedError(key)
     if cached := cache_get("albums", key):
         return [tuple(item) for item in cached]
     lock = locks.setdefault("album:" + key, asyncio.Lock())
@@ -1292,12 +1405,15 @@ async def get_album_items(bot: Bot, url: str) -> list[tuple[str, str]]:
         if cached := cache_get("albums", key):
             return [tuple(item) for item in cached]
         items = []
+        message_ids = []
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             files = await run_with_timeout(download_album, url, tmp)
             for part in chunks(files):
                 for msg in await upload_album_part(bot, part, url):
+                    message_ids.append(msg.message_id)
                     if item := sent_item(msg):
                         items.append(item)
+        remember_upload(message_ids, user_id)
         if not items:
             raise RuntimeError("Telegram didn't return the uploaded files")
         cache_put("albums", key, [list(item) for item in items])
@@ -1356,10 +1472,35 @@ def sender_mention(user: User | None) -> str:
     return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 
+def find_link(text: str | None) -> str:
+    """Return the first supported link in a text ("" if none).
+
+    Punctuation that sticks to the end of a link is cut off.
+    """
+    m = LINK_RE.search(text or "")
+    return m.group(0).rstrip(TRAILING) if m else ""
+
+
 def url_of(msg: Message) -> str:
     """Return the first supported link in a message ("" if none)."""
-    m = LINK_RE.search(msg.text or "")
-    return m.group(0) if m else ""
+    return find_link(msg.text)
+
+
+def looks_like_announcement(msg: Message, url: str) -> bool:
+    """Tell whether a group message with a link isn't a share.
+
+    Announcements, ads and channel posts often include an Instagram or
+    TikTok link, and reposting it would only duplicate the post. A
+    share is just a link, maybe with a short comment.
+    """
+    if msg.is_automatic_forward:
+        return True  # a channel post in its discussion group
+    text = msg.text or ""
+    extra = " ".join(text.replace(url, " ").split())
+    return (
+        len(extra) > GROUP_TEXT_LIMIT
+        or len(URL_RE.findall(text)) > GROUP_URL_LIMIT
+    )
 
 
 def link_comment(text: str, url: str) -> str:
@@ -1405,10 +1546,11 @@ async def reply_with_media(
         options["reply_parameters"] = ReplyParameters(
             message_id=msg.message_id
         )
+    user_id = msg.from_user.id if msg.from_user else None
     if await asyncio.to_thread(is_album, url):
-        items = await get_album_items(bot, url)
+        items = await get_album_items(bot, url, user_id)
     else:
-        items = [("video", await get_file_id(bot, url))]
+        items = [("video", await get_file_id(bot, url, user_id))]
     first_id = None
     for n, part in enumerate(chunks(items)):
         # Only the first message or album gets the caption.
@@ -1498,11 +1640,25 @@ async def on_language_chosen(c: CallbackQuery):
         await c.answer(t(code, "lang_set"))
 
 
-@router.message(F.text.regexp(LINK_RE, mode="search"), private)
+def ban_text(lang: str, ban: dict) -> str:
+    """Explain a ban to the banned user, with how to appeal."""
+    if ban.get("kind") == "request":
+        return t(lang, "banned_request")
+    reason = html.escape(ban.get("reason") or t(lang, "no_reason"))
+    return t(lang, "banned_abuse", reason=reason)
+
+
+@router.message(
+    F.text.regexp(LINK_RE, mode="search"), ~F.text.startswith("/"), private
+)
 async def on_link(msg: Message, bot: Bot):
     """Reply with the media to a link sent directly to the bot."""
     lang = lang_of(msg.from_user)
-    url = LINK_RE.search(msg.text).group(0)
+    if ban := ban_of(msg.from_user):
+        ban["lang"] = lang
+        await msg.answer(ban_text(lang, ban))
+        return
+    url = find_link(msg.text)
     await react(bot, msg, REACTION_WORKING)
     status = await msg.reply(t(lang, "downloading"))
     try:
@@ -1664,6 +1820,235 @@ async def on_migrate(msg: Message, bot: Bot, dispatcher: Dispatcher):
     request_stop(dispatcher, "stop", quiet=True)
 
 
+ADMIN_COMMANDS = ("ban", "unban", "block", "unblock", "bans")
+
+
+def ban_target(args: list[str], replied: Message | None) -> int | None:
+    """Find whom a /ban or /unban is about.
+
+    Either a user id as the first argument, or, in the storage
+    channel, the user who requested the media the command replies to.
+    """
+    if args and args[0].lstrip("-").isdigit():
+        return int(args.pop(0))
+    if replied is not None:
+        return uploader_of(replied.message_id)
+    return None
+
+
+async def notify(bot: Bot, user_id: int, key: str, **kwargs):
+    """Message a user in their language (they may block the bot).
+
+    The language is the user's /language choice, or the one seen when
+    they last ran into the ban.
+    """
+    lang = (
+        state["users"].get(str(user_id), {}).get("lang")
+        or (ban_of(user_id) or {}).get("lang")
+        or DEFAULT_LANG
+    )
+    try:
+        await bot.send_message(user_id, t(lang, key, **kwargs))
+    except Exception as e:
+        logging.info("couldn't notify %s: %s", user_id, e)
+
+
+async def admin_command(
+    bot: Bot, cmd: str, args: list[str], replied: Message | None
+) -> str:
+    """Run an owner command and return the answer (English, HTML).
+
+    /ban <id|reply> [reason]: ban a user; a reason starting with
+        "request" marks a ban the user asked for.
+    /unban <id>: lift a ban.
+    /block <link|reply> [reason]: never download a post again; its
+        cached copy is forgotten, and the replied copy deleted.
+    /unblock <link>: allow a post again.
+    /bans: show both lists.
+    """
+    if cmd in ("ban", "unban"):
+        user_id = ban_target(args, replied)
+        if user_id is None:
+            return t("en", "admin_who")
+        if cmd == "unban":
+            if ban_of(user_id) is None:
+                return t("en", "admin_not_banned", id=user_id)
+            await notify(bot, user_id, "unbanned")
+            unban_user(user_id)
+            return t("en", "admin_unbanned", id=user_id)
+        reason = " ".join(args)
+        kind = "request" if reason.lower().startswith("request") else "abuse"
+        ban_user(user_id, reason, kind)
+        if kind == "abuse":
+            await notify(
+                bot,
+                user_id,
+                "banned_abuse",
+                reason=html.escape(reason or t("en", "no_reason")),
+            )
+        return t("en", "admin_banned", id=user_id, kind=kind)
+    if cmd in ("block", "unblock"):
+        url = find_link(args[0]) if args else ""
+        if args and url:
+            args = args[1:]
+        elif replied is not None:
+            url = find_link(replied.caption)
+        if not url:
+            return t("en", "admin_which_post")
+        key = await asyncio.to_thread(media_key, url)
+        if cmd == "unblock":
+            if state["blocked"].pop(key, None) is None:
+                return t("en", "admin_not_blocked", post=key)
+            save_state()
+            return t("en", "admin_unblocked", post=key)
+        state["blocked"][key] = {
+            "reason": " ".join(args),
+            "at": int(time.time()),
+        }
+        save_state()
+        cache_drop(key)
+        if replied is not None:
+            with contextlib.suppress(Exception):
+                await replied.delete()
+        return t("en", "admin_blocked", post=key)
+    bans = [
+        f"<code>{uid}</code> {b['kind']}: "
+        f"{html.escape(b.get('reason') or '-')}"
+        for uid, b in list(state["bans"].items())[-50:]
+    ]
+    blocked = [
+        f"<code>{html.escape(key)}</code>: "
+        f"{html.escape(b.get('reason') or '-')}"
+        for key, b in list(state["blocked"].items())[-50:]
+    ]
+    return t(
+        "en",
+        "admin_list",
+        bans="\n".join(bans) or "-",
+        blocked="\n".join(blocked) or "-",
+    )
+
+
+@router.channel_post(F.chat.id == STORAGE_CHAT_ID, Command(*ADMIN_COMMANDS))
+async def on_storage_command(msg: Message, bot: Bot, command: CommandObject):
+    """Run an owner command posted in the storage channel.
+
+    Only its admins can post there, so the post itself proves it's
+    the owner. Reply to a stored video to ban whoever requested it or
+    to block the post. The command and the answer disappear after a
+    minute, to keep the channel clean.
+    """
+    args = (command.args or "").split()
+    text = await admin_command(
+        bot, command.command.lower(), args, msg.reply_to_message
+    )
+    answer = await bot.send_message(
+        STORAGE_CHAT_ID,
+        text,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+    for message_id in (msg.message_id, answer.message_id):
+        delete_later(bot, STORAGE_CHAT_ID, message_id, ADMIN_REPLY_TTL)
+
+
+@router.message(Command(*ADMIN_COMMANDS), private)
+async def on_owner_admin(msg: Message, bot: Bot, command: CommandObject):
+    """Run an owner command sent in private chat."""
+    if not OWNER_ID or not msg.from_user or msg.from_user.id != OWNER_ID:
+        await on_other(msg)
+        return
+    args = (command.args or "").split()
+    await msg.answer(
+        await admin_command(bot, command.command.lower(), args, None),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+
+
+def appeal_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Build the owner's buttons for an appeal."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Unban", callback_data=f"appeal:yes:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Reject", callback_data=f"appeal:no:{user_id}"
+                ),
+            ]
+        ]
+    )
+
+
+@router.message(Command("appeal"), private)
+async def on_appeal(msg: Message, bot: Bot, command: CommandObject):
+    """Let a banned user ask to be unbanned.
+
+    A ban the user asked for is lifted right away. Other appeals go to
+    the owner (or the storage channel if OWNER_ID isn't set) with
+    buttons, at most one per APPEAL_COOLDOWN.
+    """
+    lang = lang_of(msg.from_user)
+    user = msg.from_user
+    ban = ban_of(user)
+    if ban is None:
+        await msg.answer(t(lang, "appeal_not_banned"))
+        return
+    if ban.get("kind") == "request":
+        unban_user(user.id)
+        await msg.answer(t(lang, "unbanned"))
+        return
+    if time.time() - ban.get("appealed", 0) < APPEAL_COOLDOWN:
+        await msg.answer(t(lang, "appeal_wait"))
+        return
+    if not command.args:
+        await msg.answer(t(lang, "appeal_usage"))
+        return
+    ban["appealed"] = int(time.time())
+    ban["lang"] = lang  # to answer in it later
+    save_state()
+    text = t(
+        "en",
+        "admin_appeal",
+        user=sender_mention(user),
+        id=user.id,
+        reason=html.escape(ban.get("reason") or "-"),
+        text=html.escape(command.args[:1000]),
+    )
+    await bot.send_message(
+        OWNER_ID or STORAGE_CHAT_ID,
+        text,
+        reply_markup=appeal_keyboard(user.id),
+    )
+    await msg.answer(t(lang, "appeal_sent"))
+
+
+@router.callback_query(F.data.startswith("appeal:"))
+async def on_appeal_decided(c: CallbackQuery, bot: Bot):
+    """Unban or reject when the owner presses a button on an appeal."""
+    in_storage = (
+        isinstance(c.message, Message) and c.message.chat.id == STORAGE_CHAT_ID
+    )
+    if c.from_user.id != OWNER_ID and not (not OWNER_ID and in_storage):
+        await c.answer()
+        return
+    _, decision, raw_id = (c.data or "::").split(":", 2)
+    if not raw_id.lstrip("-").isdigit():
+        await c.answer()
+        return
+    user_id = int(raw_id)
+    if decision == "yes":
+        await notify(bot, user_id, "unbanned")
+        unban_user(user_id)
+        result = t("en", "admin_appeal_yes")
+    else:
+        await notify(bot, user_id, "appeal_rejected")
+        result = t("en", "admin_appeal_no")
+    if isinstance(c.message, Message):
+        await c.message.edit_text((c.message.html_text or "") + result)
+    await c.answer()
+
+
 @router.message(private)
 async def on_other(msg: Message):
     """Hint that a link is expected in private chat."""
@@ -1693,6 +2078,7 @@ async def track_groups(
 
 @router.message(
     F.text.regexp(LINK_RE, mode="search"),
+    ~F.text.startswith("/"),
     group,
     # Messages sent through inline mode are already handled.
     F.via_bot.is_(None),
@@ -1704,11 +2090,23 @@ async def on_group_link(msg: Message, bot: Bot):
     on the link and the "sending video..." status show that the bot
     works.
     """
-    url = LINK_RE.search(msg.text).group(0)
+    url = find_link(msg.text)
+    user_id = msg.from_user.id if msg.from_user else None
+    if looks_like_announcement(msg, url):
+        logging.info("group %s: link in a long text, skipped", msg.chat.id)
+        return
+    if ban_of(msg.from_user):
+        # Silently: a ban is nobody else's business.
+        logging.info("group %s: link from banned %s", msg.chat.id, user_id)
+        return
     mode = cleanup_mode(msg.chat.id)
     lang = group_lang(msg.chat.id, msg.from_user)
     logging.info(
-        "group %s: %s link, cleanup=%s", msg.chat.id, platform_of(url), mode
+        "group %s: %s link from %s, cleanup=%s",
+        msg.chat.id,
+        platform_of(url),
+        user_id,
+        mode,
     )
     # In groups with topics, repeats are looked for in the same topic:
     # a reply can't point to a message in another one.
@@ -2042,14 +2440,14 @@ async def on_inline(q: InlineQuery):
     returned and replaced once the user sends it.
     """
     lang = lang_of(q.from_user)
-    m = LINK_RE.search(q.query)
-    if not m:
+    url = find_link(q.query)
+    if not url or ban_of(q.from_user):
         await q.answer([], cache_time=1, is_personal=True)
         return
-    url = m.group(0)
 
-    file_id = cache_get("videos", await asyncio.to_thread(media_key, url))
-    if file_id:
+    key = await asyncio.to_thread(media_key, url)
+    file_id = cache_get("videos", key)
+    if file_id and key not in state["blocked"]:
         cached = InlineQueryResultCachedVideo(
             id="c" + result_id(url),
             video_file_id=file_id,
@@ -2085,10 +2483,15 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
     """Swap the placeholder for the video once it is sent."""
     if not r.inline_message_id or r.result_id.startswith("c"):
         return
-    m = LINK_RE.search(r.query)
-    if not m:
+    url = find_link(r.query)
+    if not url:
         return
     lang = lang_of(r.from_user)
+    if ban := ban_of(r.from_user):
+        await bot.edit_message_text(
+            inline_message_id=r.inline_message_id, text=ban_text(lang, ban)
+        )
+        return
 
     def show_slow():
         """Replace "Downloading..." with "taking longer than usual"."""
@@ -2100,13 +2503,13 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
 
     try:
         async with slow_notice(show_slow):
-            file_id = await get_file_id(bot, m.group(0))
+            file_id = await get_file_id(bot, url, r.from_user.id)
         await bot.edit_message_media(
             inline_message_id=r.inline_message_id,
             media=InputMediaVideo(media=file_id, supports_streaming=True),
         )
     except Exception as e:
-        logging.exception("download failed: %s", m.group(0))
+        logging.exception("download failed: %s", url)
         await bot.edit_message_text(
             inline_message_id=r.inline_message_id, text=error_text(lang, e)
         )

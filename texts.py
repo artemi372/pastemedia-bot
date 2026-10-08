@@ -105,6 +105,62 @@ TEXTS = {
         "notices_set_off": "🔕 Restart and shutdown notices are off.",
         "source_line": "\n\n👤 Author: @{author}\n🧩 Open source: {repo}",
         "cmd_help": "Help and commands",
+        "blocked_content": "🚫 This post can't be downloaded with this bot.",
+        "no_reason": "no reason given",
+        "banned_abuse": (
+            "🚫 You've been blocked from using this bot.\n"
+            "Reason: {reason}\n\n"
+            "If you think it's a mistake, write /appeal and why, for example:"
+            " <code>/appeal I sent the wrong link</code>"
+        ),
+        "banned_request": (
+            "🚫 At your request, the bot doesn't process your messages.\n"
+            "To use it again, send /appeal."
+        ),
+        "appeal_not_banned": "You're not blocked 🙂",
+        "appeal_usage": (
+            "Write why you should be unblocked, for example:"
+            " <code>/appeal I sent the wrong link</code>"
+        ),
+        "appeal_sent": (
+            "📨 Your appeal was sent to the author. The answer will come here."
+        ),
+        "appeal_wait": (
+            "⏳ You've already appealed. You can send a new appeal 24 hours"
+            " after the last one."
+        ),
+        "appeal_rejected": (
+            "❌ Your appeal was rejected. You can try again in 24 hours."
+        ),
+        "unbanned": "✅ You're unblocked, the bot works for you again.",
+        "admin_who": (
+            "Whom? Reply to a stored video (requests are known for 7 days)"
+            " or give a user id: <code>/ban 123456 reason</code>"
+        ),
+        "admin_which_post": (
+            "Which post? Reply to a stored video with its link in the"
+            " caption, or give a link: <code>/block https://... reason</code>"
+        ),
+        "admin_banned": (
+            "🚫 Banned <code>{id}</code> ({kind}). Lift with"
+            " <code>/unban {id}</code>"
+        ),
+        "admin_unbanned": "✅ Unbanned <code>{id}</code>",
+        "admin_not_banned": "<code>{id}</code> isn't banned",
+        "admin_blocked": (
+            "🚫 Blocked <code>{post}</code>, cached copy forgotten"
+        ),
+        "admin_unblocked": "✅ Unblocked <code>{post}</code>",
+        "admin_not_blocked": "<code>{post}</code> isn't blocked",
+        "admin_list": (
+            "<b>Banned users</b>\n{bans}\n\n<b>Blocked posts</b>\n{blocked}"
+        ),
+        "admin_appeal": (
+            "📨 <b>Appeal</b> from {user} (<code>{id}</code>)\n"
+            "Ban reason: {reason}\n\n{text}"
+        ),
+        "admin_appeal_yes": "\n\n✅ Unbanned",
+        "admin_appeal_no": "\n\n❌ Rejected",
         "cmd_privacy": "Privacy and terms",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Terms of Use",
@@ -113,7 +169,9 @@ TEXTS = {
             "🔒 <b>Privacy</b>\n\n"
             "The bot keeps only what it needs: your Telegram ID and language"
             " if you changed it, group IDs and settings, and copies of"
-            " downloaded videos with their links in a private channel."
+            " downloaded videos with their links in a private channel, plus,"
+            " for a week, who requested each one, and a list of blocked"
+            " users, to stop abuse."
             " Names, phone numbers and message texts are not stored. Data is"
             " never sold or shared."
         ),
@@ -297,6 +355,32 @@ TEXTS = {
         ),
         "source_line": "\n\n👤 Автор: @{author}\n🧩 Исходный код: {repo}",
         "cmd_help": "Помощь и команды",
+        "blocked_content": "🚫 Этот пост нельзя скачать через бота.",
+        "no_reason": "причина не указана",
+        "banned_abuse": (
+            "🚫 Тебе закрыт доступ к боту.\n"
+            "Причина: {reason}\n\n"
+            "Если это ошибка, напиши /appeal и почему, например:"
+            " <code>/appeal скинул не ту ссылку</code>"
+        ),
+        "banned_request": (
+            "🚫 По твоей просьбе бот не обрабатывает твои сообщения.\n"
+            "Чтобы снова им пользоваться, отправь /appeal."
+        ),
+        "appeal_not_banned": "Ты не заблокирован 🙂",
+        "appeal_usage": (
+            "Напиши, почему тебя стоит разблокировать, например:"
+            " <code>/appeal скинул не ту ссылку</code>"
+        ),
+        "appeal_sent": ("📨 Апелляция отправлена автору. Ответ придёт сюда."),
+        "appeal_wait": (
+            "⏳ Ты уже отправлял апелляцию. Новую можно через 24 часа после"
+            " прошлой."
+        ),
+        "appeal_rejected": (
+            "❌ Апелляцию отклонили. Попробовать снова можно через 24 часа."
+        ),
+        "unbanned": "✅ Ты разблокирован, бот снова работает для тебя.",
         "cmd_privacy": "Конфиденциальность и правила",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Правила",
@@ -305,7 +389,9 @@ TEXTS = {
             "🔒 <b>Конфиденциальность</b>\n\n"
             "Бот хранит только нужное для работы: твой Telegram ID и язык,"
             " если ты его менял, ID и настройки групп, а также копии"
-            " скачанных видео со ссылками в закрытом канале. Имена, телефоны"
+            " скачанных видео со ссылками в закрытом канале, неделю — кто"
+            " запросил каждое, и список заблокированных, чтобы пресекать"
+            " злоупотребления. Имена, телефоны"
             " и тексты сообщений не сохраняются. Данные никому не продаются"
             " и не передаются."
         ),
@@ -489,6 +575,39 @@ TEXTS = {
         ),
         "source_line": "\n\n👤 Autor: @{author}\n🧩 Lähtekood: {repo}",
         "cmd_help": "Abi ja käsud",
+        "blocked_content": (
+            "🚫 Seda postitust ei saa selle botiga alla laadida."
+        ),
+        "no_reason": "põhjust pole märgitud",
+        "banned_abuse": (
+            "🚫 Sinu ligipääs botile on suletud.\n"
+            "Põhjus: {reason}\n\n"
+            "Kui see on viga, kirjuta /appeal ja miks, näiteks:"
+            " <code>/appeal saatsin vale lingi</code>"
+        ),
+        "banned_request": (
+            "🚫 Sinu palvel bot sinu sõnumeid ei töötle.\n"
+            "Et seda uuesti kasutada, saada /appeal."
+        ),
+        "appeal_not_banned": "Sa ei ole blokeeritud 🙂",
+        "appeal_usage": (
+            "Kirjuta, miks sind tuleks blokeeringust vabastada, näiteks:"
+            " <code>/appeal saatsin vale lingi</code>"
+        ),
+        "appeal_sent": (
+            "📨 Apellatsioon saadeti autorile. Vastus tuleb siia."
+        ),
+        "appeal_wait": (
+            "⏳ Sa juba saatsid apellatsiooni. Uue saad saata 24 tundi pärast"
+            " eelmist."
+        ),
+        "appeal_rejected": (
+            "❌ Apellatsioon lükati tagasi. Uuesti saad proovida 24 tunni"
+            " pärast."
+        ),
+        "unbanned": (
+            "✅ Blokeering on eemaldatud, bot töötab sinu jaoks jälle."
+        ),
         "cmd_privacy": "Privaatsus ja tingimused",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Kasutustingimused",
@@ -497,7 +616,9 @@ TEXTS = {
             "🔒 <b>Privaatsus</b>\n\n"
             "Bot hoiab ainult vajalikku: sinu Telegrami ID ja keele, kui"
             " seda muutsid, gruppide ID-d ja seaded ning allalaaditud"
-            " videote koopiad koos linkidega privaatses kanalis. Nimesid,"
+            " videote koopiad koos linkidega privaatses kanalis, nädal aega"
+            " ka seda, kes iga video küsis, ning blokeeritud kasutajate"
+            " nimekirja, et kuritarvitust peatada. Nimesid,"
             " telefoninumbreid ja sõnumite teksti ei salvestata. Andmeid ei"
             " müüda ega jagata."
         ),
