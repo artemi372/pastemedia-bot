@@ -642,16 +642,23 @@ def _pick_clean_format(info: dict) -> dict:
         )
 
     def score(f):
-        """Rank a format: fits into 50 MB, H.264, height, bitrate.
+        """Rank a format: has sound, fits into 50 MB, H.264, height.
 
         A format of unknown size counts as fitting; if it turns out
-        too big, it gets compressed.
+        too big, it gets compressed. Formats without sound go last.
         """
+        has_audio = f.get("acodec") != "none"
         size = f.get("filesize") or f.get("filesize_approx") or 0
         vcodec = (f.get("vcodec") or "").lower()
         # HEVC doesn't play on some Telegram clients.
         h264 = vcodec.startswith(("h264", "avc"))
-        return size <= MAX_BYTES, h264, f.get("height") or 0, f.get("tbr") or 0
+        return (
+            has_audio,
+            size <= MAX_BYTES,
+            h264,
+            f.get("height") or 0,
+            f.get("tbr") or 0,
+        )
 
     return max(fmts, key=score)
 
@@ -1200,6 +1207,22 @@ def compress_plan(duration: float, factor: float = 1.0) -> tuple[int, int]:
     return video_kbps, 360
 
 
+def audio_streams(path: str) -> int:
+    """Return the number of audio streams in a file (-1 if unknown)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a"]
+            + ["-show_entries", "stream=index", "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    except Exception:
+        return -1
+    return len(out.split())
+
+
 def compress_video(src: str, outdir: str) -> tuple[str, dict]:
     """Re-encode a video with ffmpeg so it fits into the Bot API limit.
 
@@ -1211,6 +1234,9 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
     if not duration:
         raise TooBigError("can't compress: unknown duration")
     out = os.path.join(outdir, "compressed.mp4")
+    src_audio = audio_streams(src)
+    if src_audio == 0:
+        logging.warning("%s has no sound before compression", src)
     for factor in (1.0, 0.85):
         kbps, side = compress_plan(duration, factor)
         # Limit the shorter side, so portrait Shorts and landscape
@@ -1220,6 +1246,9 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
             f":'if(gt(iw,ih),min({side},ih),-2)'"
         )
         cmd = ["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", scale]
+        # The first video and the first audio track, picked explicitly:
+        # ffmpeg's automatic choice can skip the sound in some files.
+        cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
         cmd += ["-c:v", "libx264", "-preset", "veryfast"]
         cmd += ["-b:v", f"{kbps}k", "-maxrate", f"{kbps * 3 // 2}k"]
         cmd += ["-bufsize", f"{kbps * 2}k", "-pix_fmt", "yuv420p"]
@@ -1232,6 +1261,8 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
         subprocess.run(
             cmd, check=True, capture_output=True, timeout=COMPRESS_TIMEOUT
         )
+        if src_audio > 0 and audio_streams(out) == 0:
+            raise RuntimeError("the sound was lost in compression")
         if os.path.getsize(out) <= MAX_BYTES:
             return out, probe_video(out)
     raise TooBigError("still larger than 50 MB after compression")
