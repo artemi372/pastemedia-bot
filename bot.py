@@ -114,6 +114,18 @@ TERMS_URL = os.environ.get(
     "TERMS_URL", "https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07"
 )
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
+# Videos above MAX_BYTES are re-encoded with ffmpeg to fit. Sources
+# above MAX_SOURCE_BYTES are refused right away: squeezing them into
+# 50 MB would take too long and look bad anyway.
+MAX_SOURCE_BYTES = 300 * 1024 * 1024
+# What re-encoding aims for: a bit under the limit, since the bitrate
+# is never hit exactly and the mp4 container adds some bytes.
+TARGET_BYTES = 46 * 1024 * 1024
+AUDIO_KBPS = 96
+# Below this video bitrate the picture turns into mush, so the video
+# is reported as too big instead.
+MIN_VIDEO_KBPS = 400
+COMPRESS_TIMEOUT = 300  # seconds for one ffmpeg run
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
 # standard reaction emoji.
@@ -206,6 +218,9 @@ instagram_posts: dict[str, list[dict]] = {}
 resolved: dict[str, str] = {}
 # Prevents downloading the same link twice in parallel.
 locks: dict[str, asyncio.Lock] = {}
+# Re-encoding takes all CPU cores, so only one runs at a time; the
+# others wait in line.
+compress_slot = asyncio.Semaphore(1)
 # Running delayed deletions (kept so they aren't garbage-collected).
 background_tasks: set[asyncio.Task] = set()
 # Saved to STATE_FILE:
@@ -523,11 +538,16 @@ def _pick_clean_format(info: dict) -> dict:
         )
 
     def score(f):
-        """Rank a format: H.264 first, then height, then bitrate."""
+        """Rank a format: fits into 50 MB, H.264, height, bitrate.
+
+        A format of unknown size counts as fitting; if it turns out
+        too big, it gets compressed.
+        """
+        size = f.get("filesize") or f.get("filesize_approx") or 0
         vcodec = (f.get("vcodec") or "").lower()
         # HEVC doesn't play on some Telegram clients.
         h264 = vcodec.startswith(("h264", "avc"))
-        return h264, f.get("height") or 0, f.get("tbr") or 0
+        return size <= MAX_BYTES, h264, f.get("height") or 0, f.get("tbr") or 0
 
     return max(fmts, key=score)
 
@@ -870,16 +890,20 @@ def instagram_files(url: str) -> list[dict]:
     return instagram_posts[url]
 
 
-def fetch_file(c: httpx.Client, url: str, path: str):
-    """Download a file, refusing anything above the Bot API limit."""
+def fetch_file(c: httpx.Client, url: str, path: str, limit: int = MAX_BYTES):
+    """Download a file, refusing anything above `limit` bytes.
+
+    The default is the Bot API limit; a single video may be bigger,
+    since it can still be compressed.
+    """
     size = 0
     with c.stream("GET", url) as response:
         response.raise_for_status()
         with open(path, "wb") as f:
             for chunk in response.iter_bytes():
                 size += len(chunk)
-                if size > MAX_BYTES:
-                    raise TooBigError("file is larger than 50 MB")
+                if size > limit:
+                    raise TooBigError(f"file is larger than {limit} bytes")
                 f.write(chunk)
 
 
@@ -916,7 +940,7 @@ def download_instagram_single(url: str, outdir: str) -> tuple[str, dict]:
         for file in files:
             if file["video"]:
                 path = os.path.join(outdir, "video.mp4")
-                fetch_file(c, file["url"], path)
+                fetch_file(c, file["url"], path, MAX_SOURCE_BYTES)
                 return path, probe_video(path)
         img_paths = []
         for i, file in enumerate(files):
@@ -978,13 +1002,21 @@ def generic_opts(outdir: str, platform: str) -> dict:
         # Don't wait forever on a stalled connection.
         "socket_timeout": 30,
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
-        "format": "bv*+ba/b",
+        # The best quality that fits into 50 MB when the size is known
+        # (exact, then estimated), otherwise just the best; a too big
+        # file is compressed afterwards. Video gets 45 MB, leaving room
+        # for the audio track.
+        "format": (
+            "bv*[filesize<45MiB]+ba/bv*[filesize_approx<45MiB]+ba"
+            "/b[filesize<50MiB]/b[filesize_approx<50MiB]/bv*+ba/b"
+        ),
         # Prefer H.264 + AAC: HEVC, AV1 and VP9 don't play on some
         # Telegram clients.
         "format_sort": ["vcodec:h264", "res:1080", "acodec:aac"],
         "merge_output_format": "mp4",
-        # yt-dlp skips files that are known to be too big.
-        "max_filesize": MAX_BYTES,
+        # yt-dlp skips files that are known to be too big even to
+        # compress.
+        "max_filesize": MAX_SOURCE_BYTES,
     }
     cookiefile = cookies_for(platform)
     if cookiefile:
@@ -1004,11 +1036,7 @@ def download_generic(url: str, outdir: str, platform: str) -> tuple[str, dict]:
 
     # The file is missing if yt-dlp skipped it because of max_filesize.
     if not os.path.isfile(path):
-        raise TooBigError("video is larger than 50 MB")
-    if os.path.getsize(path) > MAX_BYTES:
-        raise TooBigError(
-            "video is larger than 50 MB, Bot API can't upload it"
-        )
+        raise TooBigError("video is too big even to compress")
     return path, info
 
 
@@ -1039,16 +1067,70 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
     opts = base | {
         "format": fmt["format_id"],
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
+        "max_filesize": MAX_SOURCE_BYTES,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)
 
-    if os.path.getsize(path) > MAX_BYTES:
-        raise TooBigError(
-            "video is larger than 50 MB, Bot API can't upload it"
-        )
+    if not os.path.isfile(path):
+        raise TooBigError("video is too big even to compress")
     return path, info
+
+
+def compress_plan(duration: float, factor: float = 1.0) -> tuple[int, int]:
+    """Pick a video bitrate (kbit/s) and size for a video to fit.
+
+    The size is the shorter side in pixels: lower bitrates look
+    better at a lower resolution. `factor` lowers the bitrate for a
+    second try. Raise TooBigError if the video is too long to look
+    acceptable in 50 MB.
+    """
+    total_kbps = TARGET_BYTES * 8 / 1000 / max(duration, 1) * factor
+    video_kbps = int(total_kbps - AUDIO_KBPS)
+    if video_kbps < MIN_VIDEO_KBPS:
+        raise TooBigError(f"{duration:.0f} s is too long to fit into 50 MB")
+    for min_kbps, side in ((2500, 1080), (1200, 720), (700, 480)):
+        if video_kbps >= min_kbps:
+            return video_kbps, side
+    return video_kbps, 360
+
+
+def compress_video(src: str, outdir: str) -> tuple[str, dict]:
+    """Re-encode a video with ffmpeg so it fits into the Bot API limit.
+
+    H.264 + AAC, the bitrate computed from the duration. If the result
+    is still too big (the bitrate is never hit exactly), try once more
+    with 15% less. Return the new path and its metadata.
+    """
+    duration = (probe_video(src) or {}).get("duration")
+    if not duration:
+        raise TooBigError("can't compress: unknown duration")
+    out = os.path.join(outdir, "compressed.mp4")
+    for factor in (1.0, 0.85):
+        kbps, side = compress_plan(duration, factor)
+        # Limit the shorter side, so portrait Shorts and landscape
+        # videos are scaled the same way; -2 keeps the size even.
+        scale = (
+            f"scale='if(gt(iw,ih),-2,min({side},iw))'"
+            f":'if(gt(iw,ih),min({side},ih),-2)'"
+        )
+        cmd = ["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", scale]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast"]
+        cmd += ["-b:v", f"{kbps}k", "-maxrate", f"{kbps * 3 // 2}k"]
+        cmd += ["-bufsize", f"{kbps * 2}k", "-pix_fmt", "yuv420p"]
+        cmd += ["-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "2"]
+        cmd += ["-movflags", "+faststart", out]
+        logging.info(
+            "compressing %s s video to %s kbit/s, %sp", duration, kbps, side
+        )
+        # The timeout kills ffmpeg, so nothing keeps running after it.
+        subprocess.run(
+            cmd, check=True, capture_output=True, timeout=COMPRESS_TIMEOUT
+        )
+        if os.path.getsize(out) <= MAX_BYTES:
+            return out, probe_video(out)
+    raise TooBigError("still larger than 50 MB after compression")
 
 
 async def get_file_id(bot: Bot, url: str) -> str:
@@ -1067,6 +1149,8 @@ async def get_file_id(bot: Bot, url: str) -> str:
         # A timed-out download may still hold its files open.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path, info = await run_with_timeout(download, url, tmp)
+            if os.path.getsize(path) > MAX_BYTES:
+                path, info = await compress(path, tmp)
             msg = await bot.send_video(
                 STORAGE_CHAT_ID,
                 FSInputFile(path),
@@ -1084,6 +1168,25 @@ async def get_file_id(bot: Bot, url: str) -> str:
             raise RuntimeError("Telegram didn't return the uploaded video")
         cache_put("videos", key, msg.video.file_id)
         return msg.video.file_id
+
+
+async def compress(path: str, outdir: str) -> tuple[str, dict]:
+    """Compress a too big video, one at a time.
+
+    Each ffmpeg run has its own timeout; this one also covers waiting
+    in line and a second try.
+    """
+    logging.info(
+        "%s is %.0f MB, compressing", path, os.path.getsize(path) / 2**20
+    )
+    try:
+        async with compress_slot:
+            return await asyncio.wait_for(
+                asyncio.to_thread(compress_video, path, outdir),
+                COMPRESS_TIMEOUT * 2 + 30,
+            )
+    except (asyncio.TimeoutError, subprocess.TimeoutExpired) as e:
+        raise DownloadTimeoutError("compression timed out") from e
 
 
 def chunks(items: list, size: int = ALBUM_LIMIT) -> list[list]:
@@ -2123,9 +2226,9 @@ def fit(text: str, limit: int) -> str:
 
     if size(text) <= limit:
         return text
-    while size(text + "…") > limit:
+    while text and size(text + "…") > limit:
         text = text[:-1]
-    return text.rstrip() + "…"
+    return text.rstrip() + "…" if limit > 0 else ""
 
 
 async def set_profile_status(bot: Bot, online: bool):
@@ -2151,6 +2254,8 @@ async def set_profile_status(bot: Bot, online: bool):
             ) + credits(code)
             # The privacy link must stay even if the text is cut.
             privacy = f"\n🔒 Privacy: {PRIVACY_URL}" if PRIVACY_URL else ""
+            if len(privacy) > 200:  # a link that long would crowd out the text
+                privacy = ""
             await bot.set_my_description(
                 fit(
                     status + "\n\n" + description,

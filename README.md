@@ -110,7 +110,7 @@ The bot picks them up automatically. **Use a throwaway account**, not your main 
 
 ## Limitations
 
-- Max 50 MB per video (Bot API upload limit).
+- Max 50 MB per video (Bot API upload limit). The bot first picks the best quality that fits; if a video is still too big, it's re-encoded with ffmpeg (one at a time, it takes a minute or two on a small server). Videos too long to look decent in 50 MB (roughly over 12 minutes) are refused. Albums aren't compressed.
 - YouTube and Instagram actively fight downloaders, so they break more often than TikTok.
 - Slideshows are parsed from TikTok's web page, which can change without notice.
 - Platforms change things often — if downloads break, run `pip install -U "yt-dlp[default]"`.

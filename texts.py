@@ -38,8 +38,8 @@ TEXTS = {
             "Send me a link to TikTok, YouTube Shorts or Instagram Reels 🙂"
         ),
         "too_big": (
-            "❌ The video is larger than 50 MB, Telegram doesn't let bots "
-            "send files that big."
+            "❌ The video is too big: Telegram lets bots send up to 50 MB,"
+            " and this one is too long to compress that much."
         ),
         "failed": (
             "❌ Couldn't download this video. It may be private or deleted, "
@@ -222,8 +222,8 @@ TEXTS = {
             "🙂"
         ),
         "too_big": (
-            "❌ Видео больше 50 МБ, Telegram не даёт ботам отправлять такие "
-            "файлы."
+            "❌ Видео слишком большое: Telegram даёт ботам отправлять до"
+            " 50 МБ, а это видео слишком длинное, чтобы так его сжать."
         ),
         "failed": (
             "❌ Не получилось скачать видео. Возможно, оно приватное или "
@@ -414,8 +414,8 @@ TEXTS = {
             "Saada mulle TikToki, YouTube Shortsi või Instagram Reelsi link 🙂"
         ),
         "too_big": (
-            "❌ Video on suurem kui 50 MB, Telegram ei luba bottidel nii "
-            "suuri faile saata."
+            "❌ Video on liiga suur: Telegram lubab bottidel saata kuni"
+            " 50 MB ja see video on nii palju kokkupakkimiseks liiga pikk."
         ),
         "failed": (
             "❌ Videot ei õnnestunud alla laadida. See võib olla privaatne "
