@@ -172,8 +172,11 @@ TEXTS = {
             " downloaded videos with their links in a private channel, plus,"
             " for a week, who requested each one, and a list of blocked"
             " users, to stop abuse."
-            " Names, phone numbers and message texts are not stored. Data is"
-            " never sold or shared."
+            " Names, phone numbers and message texts are not stored.\n\n"
+            "Only the author sees this, and only to run the bot. He gives"
+            " his word not to show or pass on to anyone what you downloaded"
+            " or that you did, except reports of illegal content to"
+            " Telegram. Data is never sold."
         ),
         "terms_text": (
             "📜 <b>Terms of Use</b>\n\n"
@@ -392,8 +395,11 @@ TEXTS = {
             " скачанных видео со ссылками в закрытом канале, неделю — кто"
             " запросил каждое, и список заблокированных, чтобы пресекать"
             " злоупотребления. Имена, телефоны"
-            " и тексты сообщений не сохраняются. Данные никому не продаются"
-            " и не передаются."
+            " и тексты сообщений не сохраняются.\n\n"
+            "Всё это видит только автор и только для работы бота. Он даёт"
+            " слово никому не показывать и не передавать, что ты скачивал и"
+            " что это был ты, — кроме жалоб на незаконный контент в"
+            " Telegram. Данные никому не продаются."
         ),
         "terms_text": (
             "📜 <b>Правила</b>\n\n"
@@ -619,8 +625,11 @@ TEXTS = {
             " videote koopiad koos linkidega privaatses kanalis, nädal aega"
             " ka seda, kes iga video küsis, ning blokeeritud kasutajate"
             " nimekirja, et kuritarvitust peatada. Nimesid,"
-            " telefoninumbreid ja sõnumite teksti ei salvestata. Andmeid ei"
-            " müüda ega jagata."
+            " telefoninumbreid ja sõnumite teksti ei salvestata.\n\n"
+            "Seda näeb ainult autor ja ainult boti tööks. Ta annab sõna, et"
+            " ei näita ega anna kellelegi edasi, mida sa alla laadisid ega"
+            " et see olid sina, välja arvatud teated ebaseaduslikust"
+            " sisust Telegramile. Andmeid ei müüda."
         ),
         "terms_text": (
             "📜 <b>Kasutustingimused</b>\n\n"
