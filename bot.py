@@ -181,7 +181,9 @@ PLATFORM_PATTERNS = {
     "tiktok": (
         r"https?://(?:(?:vm|vt)\.tiktok\.com/[\w-]+"
         r"|(?:www\.|m\.)?tiktok\.com/"
-        r"(?:@[\w.-]+/(?:video|photo)/\d+|t/[\w-]+))\S*"
+        r"(?:@[\w.-]+/(?:video|photo)/\d+|t/[\w-]+)"
+        # New short links, e.g. tt.site/t/ZN8BmuJda
+        r"|(?:www\.)?tt\.site/t/[\w-]+)\S*"
     ),
     # Only Shorts: regular YouTube videos rarely fit into 50 MB.
     "youtube": r"https?://(?:www\.|m\.)?youtube\.com/shorts/[\w-]+\S*",
@@ -676,7 +678,7 @@ def _http() -> httpx.Client:
 
 
 def resolve_url(url: str) -> str:
-    """Follow short links (vm.tiktok.com/...) to the full post URL."""
+    """Follow short links (vm.tiktok.com, tt.site) to the post URL."""
     if url not in resolved:
         with _http() as c:
             resolved[url] = str(c.get(url).url)
@@ -1172,7 +1174,7 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
     if cookiefile:
         base["cookiefile"] = cookiefile
     with yt_dlp.YoutubeDL(base) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(full_url, download=False)
 
     fmt = _pick_clean_format(info)
     opts = base | {
@@ -1181,7 +1183,7 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
         "max_filesize": MAX_SOURCE_BYTES,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+        info = ydl.extract_info(full_url, download=True)
         path = ydl.prepare_filename(info)
 
     if not os.path.isfile(path):
