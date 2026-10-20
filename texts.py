@@ -161,14 +161,39 @@ TEXTS = {
         ),
         "admin_appeal_yes": "\n\n✅ Unbanned",
         "admin_appeal_no": "\n\n❌ Rejected",
+        "broadcast_usage": (
+            "Usage: <code>/broadcast</code> or <code>/broadcast silent</code>"
+            " (no notifications), <code>/broadcast cancel</code> to drop it"
+        ),
+        "broadcast_ask": (
+            "📢 Reply to this message with what to send to all groups and"
+            " users ({mode}). Text, photo, video, anything; formatting is"
+            " kept. One message only, albums aren't supported."
+        ),
+        "broadcast_loud": "with notifications",
+        "broadcast_silent": "silently",
+        "broadcast_confirm": (
+            "Send this to {groups} groups and {users} users, {mode}?"
+        ),
+        "broadcast_sending": "📤 Sending to {count} chats…",
+        "broadcast_done": (
+            "✅ Broadcast sent to {sent} of {count} chats ({failed} failed:"
+            " blocked or kicked the bot, or other errors, see the log)"
+        ),
+        "broadcast_cancelled": "❌ Broadcast cancelled",
+        "broadcast_expired": (
+            "This broadcast is gone (already sent, or the bot restarted)."
+            " Start again with /broadcast"
+        ),
         "cmd_privacy": "Privacy and terms",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Terms of Use",
         "privacy_name": "Privacy Policy",
         "privacy_text": (
             "🔒 <b>Privacy</b>\n\n"
-            "The bot keeps only what it needs: your Telegram ID and language"
-            " if you changed it, group IDs and settings, and copies of"
+            "The bot keeps only what it needs: your Telegram ID (for rare"
+            " announcements about the bot) and language if you changed it,"
+            " group IDs and settings, and copies of"
             " downloaded videos with their links in a private channel, plus,"
             " for a week, who requested each one, and a list of blocked"
             " users, to stop abuse."
@@ -390,8 +415,9 @@ TEXTS = {
         "privacy_name": "Конфиденциальность",
         "privacy_text": (
             "🔒 <b>Конфиденциальность</b>\n\n"
-            "Бот хранит только нужное для работы: твой Telegram ID и язык,"
-            " если ты его менял, ID и настройки групп, а также копии"
+            "Бот хранит только нужное для работы: твой Telegram ID (для"
+            " редких объявлений о боте) и язык, если ты его менял,"
+            " ID и настройки групп, а также копии"
             " скачанных видео со ссылками в закрытом канале, неделю — кто"
             " запросил каждое, и список заблокированных, чтобы пресекать"
             " злоупотребления. Имена, телефоны"
@@ -620,8 +646,9 @@ TEXTS = {
         "privacy_name": "Privaatsuspoliitika",
         "privacy_text": (
             "🔒 <b>Privaatsus</b>\n\n"
-            "Bot hoiab ainult vajalikku: sinu Telegrami ID ja keele, kui"
-            " seda muutsid, gruppide ID-d ja seaded ning allalaaditud"
+            "Bot hoiab ainult vajalikku: sinu Telegrami ID (harvade"
+            " teadaannete jaoks boti kohta) ja keele, kui seda muutsid,"
+            " gruppide ID-d ja seaded ning allalaaditud"
             " videote koopiad koos linkidega privaatses kanalis, nädal aega"
             " ka seda, kes iga video küsis, ning blokeeritud kasutajate"
             " nimekirja, et kuritarvitust peatada. Nimesid,"

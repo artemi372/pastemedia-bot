@@ -53,6 +53,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramMigrateToChat,
     TelegramNetworkError,
+    TelegramRetryAfter,
 )
 from aiogram.filters import (
     JOIN_TRANSITION,
@@ -69,6 +70,7 @@ from aiogram.types import (
     Chat,
     ChatMemberUpdated,
     ChosenInlineResult,
+    ForceReply,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -249,11 +251,14 @@ compress_slot = asyncio.Semaphore(1)
 background_tasks: set[asyncio.Task] = set()
 # Saved to STATE_FILE:
 #   users: str(user_id) -> per-user settings, e.g. {"lang": "et"}
+#   known_users: str(user_id) -> unix time of their first private
+#   message; /broadcast sends to them
 #   chats: str(chat_id) -> per-group settings set by admins
 #   groups: str(chat_id) -> language of the group
 #   restart_notices: str(chat_id) -> message_id of the notice
 state: dict[str, dict[str, Any]] = {
     "users": {},
+    "known_users": {},
     "chats": {},
     "groups": {},
     "restart_notices": {},
@@ -391,6 +396,17 @@ def notices_enabled(chat_id: int | str) -> bool:
     return state["chats"].get(str(chat_id), {}).get("notices", True)
 
 
+def remember_user(user_id: int):
+    """Remember a user who wrote to the bot, for /broadcast.
+
+    Only users with a private chat can get messages from the bot.
+    """
+    key = str(user_id)
+    if key not in state["known_users"] and key not in state["bans"]:
+        state["known_users"][key] = int(time.time())
+        save_state()
+
+
 def forget_group(chat_id: int):
     """Remove a group from the persistent list."""
     if state["groups"].pop(str(chat_id), None) is not None:
@@ -464,6 +480,7 @@ def ban_user(user_id: int, reason: str, kind: str = "abuse"):
     }
     if kind == "request":
         state["users"].pop(str(user_id), None)
+        state["known_users"].pop(str(user_id), None)
     save_state()
 
 
@@ -1673,6 +1690,179 @@ async def on_language_chosen(c: CallbackQuery):
         await c.answer(t(code, "lang_set"))
 
 
+# ---------- owner: /broadcast ----------
+
+# The broadcast being prepared: {"silent": bool, "prompt": id of the
+# message to reply to, "source": id of the owner's reply}. Kept in
+# memory only; after a restart just run /broadcast again.
+broadcast_draft: dict[str, Any] = {}
+
+
+def is_owner(user: User | None) -> bool:
+    """Return True if the user is the bot's owner (OWNER_ID)."""
+    return bool(OWNER_ID) and user is not None and user.id == OWNER_ID
+
+
+def broadcast_targets() -> list[int]:
+    """Return the chats a broadcast goes to: groups, then users.
+
+    Banned users and those who asked not to be processed are skipped,
+    and so is the owner, who already has the message.
+    """
+    users = set(state["known_users"]) | set(state["users"])
+    users -= set(state["bans"])
+    users.discard(str(OWNER_ID))
+    return [int(c) for c in state["groups"]] + [int(u) for u in users]
+
+
+def broadcast_keyboard() -> InlineKeyboardMarkup:
+    """Build the owner's Send / Cancel buttons for a broadcast."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Send", callback_data="bcast:send"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Cancel", callback_data="bcast:cancel"
+                ),
+            ]
+        ]
+    )
+
+
+@router.message(Command("broadcast"), private)
+async def on_broadcast(msg: Message, command: CommandObject):
+    """Start a broadcast to all groups and users (owner only).
+
+    "/broadcast" asks the owner to reply with the message to send;
+    "/broadcast silent" sends it without notifications, e.g. for patch
+    notes. "/broadcast cancel" drops a broadcast being prepared.
+    """
+    if not is_owner(msg.from_user):
+        await on_other(msg)
+        return
+    args = (command.args or "").lower().split()
+    if args == ["cancel"]:
+        broadcast_draft.clear()
+        await msg.answer(t("en", "broadcast_cancelled"))
+        return
+    if args not in ([], ["silent"]):
+        await msg.answer(t("en", "broadcast_usage"))
+        return
+    silent = args == ["silent"]
+    mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
+    prompt = await msg.answer(
+        t("en", "broadcast_ask", mode=mode),
+        reply_markup=ForceReply(input_field_placeholder="Broadcast message"),
+    )
+    broadcast_draft.clear()
+    broadcast_draft.update(silent=silent, prompt=prompt.message_id)
+
+
+def is_broadcast_reply(msg: Message) -> bool:
+    """Return True for the owner's reply to the broadcast prompt."""
+    replied = msg.reply_to_message
+    return (
+        is_owner(msg.from_user)
+        and replied is not None
+        and replied.message_id == broadcast_draft.get("prompt")
+    )
+
+
+# Registered before on_link, so a message with a link is broadcast
+# instead of downloaded.
+@router.message(is_broadcast_reply, private)
+async def on_broadcast_message(msg: Message):
+    """Take the owner's reply as the broadcast and ask to confirm it."""
+    broadcast_draft.pop("prompt", None)
+    broadcast_draft["source"] = msg.message_id
+    targets = broadcast_targets()
+    groups = len(state["groups"])
+    silent = broadcast_draft["silent"]
+    mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
+    await msg.reply(
+        t(
+            "en",
+            "broadcast_confirm",
+            groups=groups,
+            users=len(targets) - groups,
+            mode=mode,
+        ),
+        reply_markup=broadcast_keyboard(),
+    )
+
+
+async def broadcast_one(
+    bot: Bot, chat_id: int, source: int, silent: bool
+) -> bool:
+    """Copy the owner's message to one chat; return True if sent.
+
+    Chats that blocked or kicked the bot are forgotten. A group that
+    became a supergroup gets the message at its new id.
+    """
+    for _ in range(3):
+        try:
+            await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=OWNER_ID,
+                message_id=source,
+                disable_notification=silent,
+            )
+            return True
+        except TelegramRetryAfter as e:
+            # Too fast for Telegram: wait as long as it asks.
+            await asyncio.sleep(e.retry_after)
+        except TelegramMigrateToChat as e:
+            move_chat(chat_id, e.migrate_to_chat_id)
+            chat_id = e.migrate_to_chat_id
+        except TelegramForbiddenError as e:
+            logging.info("broadcast: dropping %s: %s", chat_id, e)
+            if chat_id < 0:
+                forget_group(chat_id)
+            elif state["known_users"].pop(str(chat_id), None) is not None:
+                save_state()
+            return False
+        except Exception as e:
+            logging.warning("broadcast to %s failed: %s", chat_id, e)
+            return False
+    return False
+
+
+@router.callback_query(F.data.startswith("bcast:"))
+async def on_broadcast_decided(c: CallbackQuery, bot: Bot):
+    """Send or cancel the broadcast when the owner presses a button."""
+    if not is_owner(c.from_user) or not isinstance(c.message, Message):
+        await c.answer()
+        return
+    source = broadcast_draft.get("source")
+    silent = broadcast_draft.get("silent", False)
+    # Cleared before sending, so a second tap can't send it twice.
+    broadcast_draft.clear()
+    if c.data != "bcast:send" or source is None:
+        key = "broadcast_cancelled" if source else "broadcast_expired"
+        await c.message.edit_text(t("en", key))
+        await c.answer()
+        return
+    targets = broadcast_targets()
+    await c.message.edit_text(t("en", "broadcast_sending", count=len(targets)))
+    await c.answer()
+    sent = 0
+    for chat_id in targets:
+        sent += await broadcast_one(bot, chat_id, source, silent)
+        await asyncio.sleep(0.05)  # stay under Telegram's rate limits
+    logging.info("broadcast sent to %s of %s chats", sent, len(targets))
+    await c.message.edit_text(
+        t(
+            "en",
+            "broadcast_done",
+            sent=sent,
+            count=len(targets),
+            failed=len(targets) - sent,
+        )
+    )
+
+
 def ban_text(lang: str, ban: dict) -> str:
     """Explain a ban to the banned user, with how to appeal."""
     if ban.get("kind") == "request":
@@ -2099,13 +2289,16 @@ async def track_groups(
     msg: Message,
     data: dict,
 ) -> Any:
-    """Remember every group the bot sees messages from.
+    """Remember every group and user the bot sees messages from.
 
     This also covers groups the bot joined before group tracking
-    existed.
+    existed. Users are remembered from private chats only: that's
+    where /broadcast can reach them.
     """
     if msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         remember_group(msg.chat.id, lang_of(msg.from_user))
+    elif msg.chat.type == ChatType.PRIVATE and msg.from_user:
+        remember_user(msg.from_user.id)
     return await handler(msg, data)
 
 
