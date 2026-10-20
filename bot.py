@@ -66,6 +66,7 @@ from aiogram.filters import (
 from aiogram.types import (
     BotCommand,
     BotCommandScopeAllGroupChats,
+    BotCommandScopeChat,
     CallbackQuery,
     Chat,
     ChatMemberUpdated,
@@ -1695,10 +1696,19 @@ async def on_language_chosen(c: CallbackQuery):
 
 # ---------- owner: /broadcast ----------
 
-# The broadcast being prepared: {"silent": bool, "prompt": id of the
-# message to reply to, "source": id of the owner's reply}. Kept in
-# memory only; after a restart just run /broadcast again.
-broadcast_draft: dict[str, Any] = {}
+# The owner sends "/broadcast [silent] [language]", replies with the
+# announcement (text, a photo with a caption, anything), checks it and
+# presses "Send". The message is copied as is to every group and every
+# user who wrote to the bot privately. The owner's texts are in the
+# owner's language.
+BROADCAST_DELAY = 0.05  # Telegram allows about 30 messages per second
+SILENT_WORDS = ("silent", "тихо", "vaikselt")
+# The owner's next message is the announcement: {"silent": bool,
+# "lang": target language or None}. In memory only.
+broadcast_pending: dict[str, Any] = {}
+# Broadcasts waiting for the "Send" button, by token: {"msg": id of the
+# owner's message, "silent", "lang"}. Several can wait at once.
+broadcasts: dict[str, dict[str, Any]] = {}
 
 
 def is_owner(user: User | None) -> bool:
@@ -1735,98 +1745,97 @@ def broadcast_targets(lang: str | None = None) -> list[int]:
     return [int(c) for c in chats if not lang or chat_lang(c) == lang]
 
 
-def broadcast_audience(lang: str | None) -> str:
-    """Describe who gets a broadcast, e.g. "chats in English"."""
-    if not lang:
-        return t("en", "broadcast_to_all")
-    return t("en", "broadcast_to_lang", name=LANG_NAMES[lang])
-
-
-def broadcast_keyboard() -> InlineKeyboardMarkup:
-    """Build the owner's Send / Cancel buttons for a broadcast."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Send", callback_data="bcast:send"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Cancel", callback_data="bcast:cancel"
-                ),
-            ]
-        ]
-    )
-
-
 @router.message(Command("broadcast"), private)
 async def on_broadcast(msg: Message, command: CommandObject):
-    """Start a broadcast to groups and users (owner only).
+    """Ask the owner for the announcement (owner only).
 
-    "/broadcast" asks the owner to reply with the message to send.
-    Optional arguments, in any order: "silent" sends it without
-    notifications, e.g. for patch notes; a language code (en, ru, et)
-    sends it only to chats where the bot speaks that language, so
-    patch notes can go out once per language. "/broadcast cancel"
-    drops a broadcast being prepared.
+    Optional arguments, in any order: "silent" ("тихо", "vaikselt")
+    sends it without notifications, e.g. for patch notes; a language
+    code (en, ru, et) sends it only to chats where the bot speaks that
+    language, so patch notes can go out once per language. Unknown
+    arguments are ignored. Everyone else gets the usual hint, as if
+    the command didn't exist.
     """
     if not is_owner(msg.from_user):
         await on_other(msg)
         return
+    lang = lang_of(msg.from_user)
     args = (command.args or "").lower().split()
-    if args == ["cancel"]:
-        broadcast_draft.clear()
-        await msg.answer(t("en", "broadcast_cancelled"))
-        return
-    langs = [a for a in args if a in TEXTS]
-    silent = "silent" in args
-    if len(langs) > 1 or len(args) != len(langs) + silent:
-        await msg.answer(
-            t("en", "broadcast_usage", langs=", ".join(sorted(TEXTS)))
+    silent = any(a in SILENT_WORDS for a in args)
+    # A language picks only the chats that use it; none means all.
+    target = next((a for a in args if a in TEXTS), None)
+    if target:
+        recipients = t(lang, "broadcast_to_lang", name=LANG_NAMES[target])
+    else:
+        recipients = t(
+            lang, "broadcast_to_all", langs=" / ".join(sorted(TEXTS))
         )
-        return
-    lang = langs[0] if langs else None
-    mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
-    prompt = await msg.answer(
-        t("en", "broadcast_ask", to=broadcast_audience(lang), mode=mode),
-        reply_markup=ForceReply(input_field_placeholder="Broadcast message"),
+    await msg.answer(
+        t(lang, "broadcast_ask_silent" if silent else "broadcast_ask")
+        + "\n"
+        + recipients,
+        reply_markup=ForceReply(selective=True),
     )
-    broadcast_draft.clear()
-    broadcast_draft.update(silent=silent, lang=lang, prompt=prompt.message_id)
+    broadcast_pending.clear()
+    broadcast_pending.update(silent=silent, lang=target)
 
 
-def is_broadcast_reply(msg: Message) -> bool:
-    """Return True for the owner's reply to the broadcast prompt."""
-    replied = msg.reply_to_message
+def is_broadcast_answer(msg: Message) -> bool:
+    """Return True for the owner's announcement after /broadcast."""
+    text = msg.text or ""
     return (
-        is_owner(msg.from_user)
-        and replied is not None
-        and replied.message_id == broadcast_draft.get("prompt")
+        bool(broadcast_pending)
+        and is_owner(msg.from_user)
+        and not text.startswith("/")
     )
 
 
-# Registered before on_link, so a message with a link is broadcast
-# instead of downloaded.
-@router.message(is_broadcast_reply, private)
-async def on_broadcast_message(msg: Message):
-    """Take the owner's reply as the broadcast and ask to confirm it."""
-    broadcast_draft.pop("prompt", None)
-    broadcast_draft["source"] = msg.message_id
-    lang = broadcast_draft["lang"]
-    targets = broadcast_targets(lang)
-    groups = sum(chat_id < 0 for chat_id in targets)
-    silent = broadcast_draft["silent"]
-    mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
+# Registered before on_link, so an announcement with a link is
+# broadcast instead of downloaded.
+@router.message(is_broadcast_answer, private)
+async def on_broadcast_answer(msg: Message):
+    """Show the send / cancel buttons under the announcement."""
+    job = {**broadcast_pending, "msg": msg.message_id}
+    broadcast_pending.clear()
+    lang = lang_of(msg.from_user)
+    count = len(broadcast_targets(job["lang"]))
+    token = str(msg.message_id)
+    broadcasts[token] = job
+    go = InlineKeyboardButton(
+        text=t(lang, "broadcast_go", n=count), callback_data=f"bc:go:{token}"
+    )
+    cancel = InlineKeyboardButton(
+        text=t(lang, "broadcast_cancel"), callback_data=f"bc:no:{token}"
+    )
+    mode = "broadcast_silent" if job["silent"] else "broadcast_loud"
     await msg.reply(
-        t(
-            "en",
-            "broadcast_confirm",
-            groups=groups,
-            users=len(targets) - groups,
-            to=broadcast_audience(lang),
-            mode=mode,
-        ),
-        reply_markup=broadcast_keyboard(),
+        t(lang, "broadcast_confirm", n=count, mode=t(lang, mode)),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[go], [cancel]]),
     )
+
+
+@router.callback_query(F.data.startswith("bc:"))
+async def on_broadcast_confirm(c: CallbackQuery, bot: Bot):
+    """Send the confirmed announcement, or cancel it."""
+    lang = lang_of(c.from_user)
+    _, action, token = (c.data or "::").split(":", 2)
+    job = broadcasts.get(token)
+    if not is_owner(c.from_user) or not job:
+        await c.answer(t(lang, "broadcast_expired"), show_alert=True)
+        return
+    # Removed before sending, so a second tap can't send it twice.
+    broadcasts.pop(token, None)
+    await c.answer()
+    if not isinstance(c.message, Message):
+        return
+    if action != "go":
+        await c.message.edit_text(t(lang, "broadcast_cancelled"))
+        return
+    await c.message.edit_text(t(lang, "broadcast_started"))
+    # In the background, so the bot keeps answering everyone else.
+    task = asyncio.create_task(run_broadcast(bot, job, c.message, lang))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
 
 
 async def broadcast_one(
@@ -1834,10 +1843,11 @@ async def broadcast_one(
 ) -> bool:
     """Copy the owner's message to one chat; return True if sent.
 
-    Chats that blocked or kicked the bot are forgotten. A group that
-    became a supergroup gets the message at its new id.
+    Flood limits are waited out. Chats that blocked or kicked the bot
+    are forgotten. A group that became a supergroup gets the message
+    at its new id.
     """
-    for _ in range(3):
+    while True:
         try:
             await bot.copy_message(
                 chat_id=chat_id,
@@ -1848,7 +1858,7 @@ async def broadcast_one(
             return True
         except TelegramRetryAfter as e:
             # Too fast for Telegram: wait as long as it asks.
-            await asyncio.sleep(e.retry_after)
+            await asyncio.sleep(e.retry_after + 1)
         except TelegramMigrateToChat as e:
             move_chat(chat_id, e.migrate_to_chat_id)
             chat_id = e.migrate_to_chat_id
@@ -1860,44 +1870,28 @@ async def broadcast_one(
                 save_state()
             return False
         except Exception as e:
-            logging.warning("broadcast to %s failed: %s", chat_id, e)
+            logging.info("broadcast: skipped %s: %s", chat_id, e)
             return False
-    return False
 
 
-@router.callback_query(F.data.startswith("bcast:"))
-async def on_broadcast_decided(c: CallbackQuery, bot: Bot):
-    """Send or cancel the broadcast when the owner presses a button."""
-    if not is_owner(c.from_user) or not isinstance(c.message, Message):
-        await c.answer()
-        return
-    source = broadcast_draft.get("source")
-    silent = broadcast_draft.get("silent", False)
-    lang = broadcast_draft.get("lang")
-    # Cleared before sending, so a second tap can't send it twice.
-    broadcast_draft.clear()
-    if c.data != "bcast:send" or source is None:
-        key = "broadcast_cancelled" if source else "broadcast_expired"
-        await c.message.edit_text(t("en", key))
-        await c.answer()
-        return
-    targets = broadcast_targets(lang)
-    await c.message.edit_text(t("en", "broadcast_sending", count=len(targets)))
-    await c.answer()
-    sent = 0
-    for chat_id in targets:
-        sent += await broadcast_one(bot, chat_id, source, silent)
-        await asyncio.sleep(0.05)  # stay under Telegram's rate limits
-    logging.info("broadcast sent to %s of %s chats", sent, len(targets))
-    await c.message.edit_text(
-        t(
-            "en",
-            "broadcast_done",
-            sent=sent,
-            count=len(targets),
-            failed=len(targets) - sent,
+async def run_broadcast(bot: Bot, job: dict, status: Message, lang: str):
+    """Copy the announcement to every chat; report the result."""
+    sent = failed = 0
+    for chat_id in broadcast_targets(job["lang"]):
+        if await broadcast_one(bot, chat_id, job["msg"], job["silent"]):
+            sent += 1
+        else:
+            failed += 1
+        await asyncio.sleep(BROADCAST_DELAY)
+    logging.info("broadcast: delivered %s, failed %s", sent, failed)
+    try:
+        await status.edit_text(
+            t(lang, "broadcast_done", sent=sent, failed=failed)
         )
-    )
+    except Exception:
+        await bot.send_message(
+            OWNER_ID, t(lang, "broadcast_done", sent=sent, failed=failed)
+        )
 
 
 def ban_text(lang: str, ban: dict) -> str:
@@ -2855,6 +2849,24 @@ async def setup_bot_profile(bot: Bot):
             BotCommand(command="privacy", description=t(code, "cmd_privacy")),
         ]
         await bot.set_my_commands(commands, language_code=lang_code)
+        if OWNER_ID:
+            # Only the owner sees /broadcast in the menu.
+            owner_commands = [
+                *commands,
+                BotCommand(
+                    command="broadcast",
+                    description=t(code, "cmd_broadcast"),
+                ),
+            ]
+            # Fails if the owner never opened a chat with the bot.
+            try:
+                await bot.set_my_commands(
+                    owner_commands,
+                    scope=BotCommandScopeChat(chat_id=OWNER_ID),
+                    language_code=lang_code,
+                )
+            except TelegramBadRequest as e:
+                logging.warning("no owner command menu: %s", e)
         # In groups only the admin settings make sense.
         await bot.set_my_commands(
             [

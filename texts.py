@@ -161,36 +161,36 @@ TEXTS = {
         ),
         "admin_appeal_yes": "\n\n✅ Unbanned",
         "admin_appeal_no": "\n\n❌ Rejected",
-        "broadcast_usage": (
-            "Usage: <code>/broadcast [silent] [language]</code>\n"
-            "• <code>silent</code>: no notifications\n"
-            "• language ({langs}): only chats where the bot speaks it,"
-            " e.g. <code>/broadcast ru silent</code>; without it, all"
-            " chats\n"
-            "<code>/broadcast cancel</code> drops a broadcast"
-        ),
         "broadcast_ask": (
-            "📢 Reply to this message with what to send to {to} ({mode})."
-            " Text, photo, video, anything; formatting is kept. One"
-            " message only, albums aren't supported."
+            "📢 Reply to this message with the announcement: text, a photo"
+            " with a caption, anything (one message, not an album)."
+            " Chats get it <b>with a notification</b>."
         ),
-        "broadcast_to_all": "<b>all chats</b>",
-        "broadcast_to_lang": "chats in <b>{name}</b>",
-        "broadcast_loud": "with notifications",
+        "broadcast_ask_silent": (
+            "📢 Reply to this message with the announcement: text, a photo"
+            " with a caption, anything (one message, not an album)."
+            " Chats get it <b>silently</b>."
+        ),
+        "broadcast_to_all": (
+            "Recipients: <b>all chats</b>. One language only:"
+            " <code>/broadcast {langs}</code>."
+        ),
+        "broadcast_to_lang": "Recipients: chats in <b>{name}</b>.",
+        "broadcast_confirm": "Preview above. Send to {n} chats ({mode})?",
         "broadcast_silent": "silently",
-        "broadcast_confirm": (
-            "Send this to {to}: {groups} groups and {users} users, {mode}?"
-        ),
-        "broadcast_sending": "📤 Sending to {count} chats…",
-        "broadcast_done": (
-            "✅ Broadcast sent to {sent} of {count} chats ({failed} failed:"
-            " blocked or kicked the bot, or other errors, see the log)"
-        ),
-        "broadcast_cancelled": "❌ Broadcast cancelled",
+        "broadcast_loud": "with a notification",
+        "broadcast_go": "✅ Send to {n} chats",
+        "broadcast_cancel": "Cancel",
+        "broadcast_cancelled": "Broadcast cancelled.",
         "broadcast_expired": (
-            "This broadcast is gone (already sent, or the bot restarted)."
-            " Start again with /broadcast"
+            "This broadcast is gone: already sent, cancelled, or the bot"
+            " restarted."
         ),
+        "broadcast_started": "📤 Sending…",
+        "broadcast_done": (
+            "✅ Broadcast done: delivered {sent}, failed {failed}."
+        ),
+        "cmd_broadcast": "Announcement to all chats",
         "cmd_privacy": "Privacy and terms",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Terms of Use",
@@ -415,6 +415,36 @@ TEXTS = {
             "❌ Апелляцию отклонили. Попробовать снова можно через 24 часа."
         ),
         "unbanned": "✅ Ты разблокирован, бот снова работает для тебя.",
+        "broadcast_ask": (
+            "📢 Ответь на это сообщение объявлением: текст, фото с"
+            " подписью, что угодно (одно сообщение, не альбом). Чаты"
+            " получат его <b>с уведомлением</b>."
+        ),
+        "broadcast_ask_silent": (
+            "📢 Ответь на это сообщение объявлением: текст, фото с"
+            " подписью, что угодно (одно сообщение, не альбом). Чаты"
+            " получат его <b>без звука</b>."
+        ),
+        "broadcast_to_all": (
+            "Получатели: <b>все чаты</b>. Только один язык:"
+            " <code>/broadcast {langs}</code>."
+        ),
+        "broadcast_to_lang": "Получатели: чаты на языке <b>{name}</b>.",
+        "broadcast_confirm": "Превью выше. Отправить в {n} чатов ({mode})?",
+        "broadcast_silent": "без звука",
+        "broadcast_loud": "с уведомлением",
+        "broadcast_go": "✅ Отправить в {n} чатов",
+        "broadcast_cancel": "Отмена",
+        "broadcast_cancelled": "Рассылка отменена.",
+        "broadcast_expired": (
+            "Этой рассылки уже нет: отправлена, отменена или бот"
+            " перезапускался."
+        ),
+        "broadcast_started": "📤 Рассылаю…",
+        "broadcast_done": (
+            "✅ Рассылка готова: доставлено {sent}, не удалось {failed}."
+        ),
+        "cmd_broadcast": "Объявление всем чатам",
         "cmd_privacy": "Конфиденциальность и правила",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Правила",
@@ -646,6 +676,38 @@ TEXTS = {
         "unbanned": (
             "✅ Blokeering on eemaldatud, bot töötab sinu jaoks jälle."
         ),
+        "broadcast_ask": (
+            "📢 Vasta sellele sõnumile teadaandega: tekst, pilt allkirjaga,"
+            " mis iganes (üks sõnum, mitte album). Vestlused saavad selle"
+            " <b>teavitusega</b>."
+        ),
+        "broadcast_ask_silent": (
+            "📢 Vasta sellele sõnumile teadaandega: tekst, pilt allkirjaga,"
+            " mis iganes (üks sõnum, mitte album). Vestlused saavad selle"
+            " <b>vaikselt</b>."
+        ),
+        "broadcast_to_all": (
+            "Saajad: <b>kõik vestlused</b>. Ainult üks keel:"
+            " <code>/broadcast {langs}</code>."
+        ),
+        "broadcast_to_lang": "Saajad: vestlused keeles <b>{name}</b>.",
+        "broadcast_confirm": (
+            "Eelvaade on üleval. Saata {n} vestlusesse ({mode})?"
+        ),
+        "broadcast_silent": "vaikselt",
+        "broadcast_loud": "teavitusega",
+        "broadcast_go": "✅ Saada {n} vestlusesse",
+        "broadcast_cancel": "Tühista",
+        "broadcast_cancelled": "Saatmine tühistatud.",
+        "broadcast_expired": (
+            "Seda teadaannet enam pole: juba saadetud, tühistatud või bot"
+            " taaskäivitus."
+        ),
+        "broadcast_started": "📤 Saadan…",
+        "broadcast_done": (
+            "✅ Saadetud: kohale jõudis {sent}, ebaõnnestus {failed}."
+        ),
+        "cmd_broadcast": "Teadaanne kõigile vestlustele",
         "cmd_privacy": "Privaatsus ja tingimused",
         "legal_links": "\n\n📄 {links}",
         "terms_name": "Kasutustingimused",
