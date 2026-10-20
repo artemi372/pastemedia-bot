@@ -162,18 +162,24 @@ TEXTS = {
         "admin_appeal_yes": "\n\n✅ Unbanned",
         "admin_appeal_no": "\n\n❌ Rejected",
         "broadcast_usage": (
-            "Usage: <code>/broadcast</code> or <code>/broadcast silent</code>"
-            " (no notifications), <code>/broadcast cancel</code> to drop it"
+            "Usage: <code>/broadcast [silent] [language]</code>\n"
+            "• <code>silent</code>: no notifications\n"
+            "• language ({langs}): only chats where the bot speaks it,"
+            " e.g. <code>/broadcast ru silent</code>; without it, all"
+            " chats\n"
+            "<code>/broadcast cancel</code> drops a broadcast"
         ),
         "broadcast_ask": (
-            "📢 Reply to this message with what to send to all groups and"
-            " users ({mode}). Text, photo, video, anything; formatting is"
-            " kept. One message only, albums aren't supported."
+            "📢 Reply to this message with what to send to {to} ({mode})."
+            " Text, photo, video, anything; formatting is kept. One"
+            " message only, albums aren't supported."
         ),
+        "broadcast_to_all": "<b>all chats</b>",
+        "broadcast_to_lang": "chats in <b>{name}</b>",
         "broadcast_loud": "with notifications",
         "broadcast_silent": "silently",
         "broadcast_confirm": (
-            "Send this to {groups} groups and {users} users, {mode}?"
+            "Send this to {to}: {groups} groups and {users} users, {mode}?"
         ),
         "broadcast_sending": "📤 Sending to {count} chats…",
         "broadcast_done": (

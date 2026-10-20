@@ -251,8 +251,8 @@ compress_slot = asyncio.Semaphore(1)
 background_tasks: set[asyncio.Task] = set()
 # Saved to STATE_FILE:
 #   users: str(user_id) -> per-user settings, e.g. {"lang": "et"}
-#   known_users: str(user_id) -> unix time of their first private
-#   message; /broadcast sends to them
+#   known_users: str(user_id) -> language of their Telegram app, for
+#   users who wrote to the bot privately; /broadcast sends to them
 #   chats: str(chat_id) -> per-group settings set by admins
 #   groups: str(chat_id) -> language of the group
 #   restart_notices: str(chat_id) -> message_id of the notice
@@ -396,14 +396,17 @@ def notices_enabled(chat_id: int | str) -> bool:
     return state["chats"].get(str(chat_id), {}).get("notices", True)
 
 
-def remember_user(user_id: int):
+def remember_user(user: User):
     """Remember a user who wrote to the bot, for /broadcast.
 
-    Only users with a private chat can get messages from the bot.
+    Only users with a private chat can get messages from the bot. The
+    language of their Telegram app is kept too, so a broadcast can go
+    to the speakers of one language only.
     """
-    key = str(user_id)
-    if key not in state["known_users"] and key not in state["bans"]:
-        state["known_users"][key] = int(time.time())
+    key = str(user.id)
+    lang = detect_lang(user.language_code)
+    if key not in state["bans"] and state["known_users"].get(key) != lang:
+        state["known_users"][key] = lang
         save_state()
 
 
@@ -1703,16 +1706,40 @@ def is_owner(user: User | None) -> bool:
     return bool(OWNER_ID) and user is not None and user.id == OWNER_ID
 
 
-def broadcast_targets() -> list[int]:
+def chat_lang(chat_id: str) -> str:
+    """Return the language the bot uses in a group or private chat.
+
+    The same choice as when answering there: the group's or user's
+    /language setting, else the group's or app's language.
+    """
+    if chat_id.startswith("-"):
+        saved = state["chats"].get(chat_id, {}).get("lang")
+        lang = saved or state["groups"].get(chat_id)
+    else:
+        saved = state["users"].get(chat_id, {}).get("lang")
+        lang = saved or state["known_users"].get(chat_id)
+    return lang if lang in TEXTS else DEFAULT_LANG
+
+
+def broadcast_targets(lang: str | None = None) -> list[int]:
     """Return the chats a broadcast goes to: groups, then users.
 
+    With `lang`, only the chats where the bot speaks that language.
     Banned users and those who asked not to be processed are skipped,
     and so is the owner, who already has the message.
     """
     users = set(state["known_users"]) | set(state["users"])
     users -= set(state["bans"])
     users.discard(str(OWNER_ID))
-    return [int(c) for c in state["groups"]] + [int(u) for u in users]
+    chats = list(state["groups"]) + sorted(users)
+    return [int(c) for c in chats if not lang or chat_lang(c) == lang]
+
+
+def broadcast_audience(lang: str | None) -> str:
+    """Describe who gets a broadcast, e.g. "chats in English"."""
+    if not lang:
+        return t("en", "broadcast_to_all")
+    return t("en", "broadcast_to_lang", name=LANG_NAMES[lang])
 
 
 def broadcast_keyboard() -> InlineKeyboardMarkup:
@@ -1733,11 +1760,14 @@ def broadcast_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(Command("broadcast"), private)
 async def on_broadcast(msg: Message, command: CommandObject):
-    """Start a broadcast to all groups and users (owner only).
+    """Start a broadcast to groups and users (owner only).
 
-    "/broadcast" asks the owner to reply with the message to send;
-    "/broadcast silent" sends it without notifications, e.g. for patch
-    notes. "/broadcast cancel" drops a broadcast being prepared.
+    "/broadcast" asks the owner to reply with the message to send.
+    Optional arguments, in any order: "silent" sends it without
+    notifications, e.g. for patch notes; a language code (en, ru, et)
+    sends it only to chats where the bot speaks that language, so
+    patch notes can go out once per language. "/broadcast cancel"
+    drops a broadcast being prepared.
     """
     if not is_owner(msg.from_user):
         await on_other(msg)
@@ -1747,17 +1777,21 @@ async def on_broadcast(msg: Message, command: CommandObject):
         broadcast_draft.clear()
         await msg.answer(t("en", "broadcast_cancelled"))
         return
-    if args not in ([], ["silent"]):
-        await msg.answer(t("en", "broadcast_usage"))
+    langs = [a for a in args if a in TEXTS]
+    silent = "silent" in args
+    if len(langs) > 1 or len(args) != len(langs) + silent:
+        await msg.answer(
+            t("en", "broadcast_usage", langs=", ".join(sorted(TEXTS)))
+        )
         return
-    silent = args == ["silent"]
+    lang = langs[0] if langs else None
     mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
     prompt = await msg.answer(
-        t("en", "broadcast_ask", mode=mode),
+        t("en", "broadcast_ask", to=broadcast_audience(lang), mode=mode),
         reply_markup=ForceReply(input_field_placeholder="Broadcast message"),
     )
     broadcast_draft.clear()
-    broadcast_draft.update(silent=silent, prompt=prompt.message_id)
+    broadcast_draft.update(silent=silent, lang=lang, prompt=prompt.message_id)
 
 
 def is_broadcast_reply(msg: Message) -> bool:
@@ -1777,8 +1811,9 @@ async def on_broadcast_message(msg: Message):
     """Take the owner's reply as the broadcast and ask to confirm it."""
     broadcast_draft.pop("prompt", None)
     broadcast_draft["source"] = msg.message_id
-    targets = broadcast_targets()
-    groups = len(state["groups"])
+    lang = broadcast_draft["lang"]
+    targets = broadcast_targets(lang)
+    groups = sum(chat_id < 0 for chat_id in targets)
     silent = broadcast_draft["silent"]
     mode = t("en", "broadcast_silent" if silent else "broadcast_loud")
     await msg.reply(
@@ -1787,6 +1822,7 @@ async def on_broadcast_message(msg: Message):
             "broadcast_confirm",
             groups=groups,
             users=len(targets) - groups,
+            to=broadcast_audience(lang),
             mode=mode,
         ),
         reply_markup=broadcast_keyboard(),
@@ -1837,6 +1873,7 @@ async def on_broadcast_decided(c: CallbackQuery, bot: Bot):
         return
     source = broadcast_draft.get("source")
     silent = broadcast_draft.get("silent", False)
+    lang = broadcast_draft.get("lang")
     # Cleared before sending, so a second tap can't send it twice.
     broadcast_draft.clear()
     if c.data != "bcast:send" or source is None:
@@ -1844,7 +1881,7 @@ async def on_broadcast_decided(c: CallbackQuery, bot: Bot):
         await c.message.edit_text(t("en", key))
         await c.answer()
         return
-    targets = broadcast_targets()
+    targets = broadcast_targets(lang)
     await c.message.edit_text(t("en", "broadcast_sending", count=len(targets)))
     await c.answer()
     sent = 0
@@ -2298,7 +2335,7 @@ async def track_groups(
     if msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         remember_group(msg.chat.id, lang_of(msg.from_user))
     elif msg.chat.type == ChatType.PRIVATE and msg.from_user:
-        remember_user(msg.from_user.id)
+        remember_user(msg.from_user)
     return await handler(msg, data)
 
 
