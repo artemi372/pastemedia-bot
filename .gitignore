@@ -221,3 +221,6 @@ __marimo__/
 media_cache.json
 cookies/
 state.json
+# Database (botkit and the bot): runtime data, never commit
+data/
+*.imported

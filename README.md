@@ -20,7 +20,7 @@ Type in any chat:
 
 pick the result — the bot replaces it with the video.
 
-You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. While downloading, the bot puts 👀 on the message with the link (removed when done, 🤷 on failure). In groups, error messages delete themselves after 15 seconds to keep the chat clean.
+You can also just send a link to the bot in a private chat, or **add it to a group**: it will reply to any message with a supported link with the video. While downloading, the bot puts 👀 on the message with the link (removed when done, 🤷 on failure). In groups, the bot's service messages and the commands sent to it delete themselves after 15 s – 2 min to keep the chat clean (`AUTO_DELETE=0` turns this off); videos stay.
 
 ### Commands
 
@@ -28,17 +28,20 @@ You can also just send a link to the bot in a private chat, or **add it to a gro
 |---|---|---|
 | `/start` | private chat | everyone |
 | `/help` | everywhere | everyone |
+| `/settings` | private chat: your language; group: language, restart notices, link messages | everyone / group admins |
 | `/language` | private chat: your language; group: the group language | everyone / group admins |
-| `/notices` | group: restart and shutdown messages on/off | group admins |
 | `/cleanup` | group: what to do with the message that has the link | group admins |
 | `/privacy`, `/terms` | everywhere: short summary and a link to the full text | everyone |
+| `/id` | everywhere: chat and user ID | everyone |
 | `/appeal` | private chat: ask to be unbanned | banned users |
+
+Group admins also means anonymous admins.
 
 `/cleanup` modes: keep the message and reply to it (default); or delete it and post the media as a separate message with the link and the sender, with the sender only, or with nothing. Deleting needs the bot to be a group admin with the *Delete messages* permission. Whatever the sender wrote next to the link ("lol look at this") is copied under the media as 💬, so it isn't lost. If the download fails, the message is never deleted.
 
 If someone posts a video that was already sent in the group (one of the last 50, within a week), the bot doesn't send it again: it replies to the earlier video with "🔁 already posted". Short and full links to the same post count as the same video.
 
-Settings survive a group turning into a supergroup (Telegram gives it a new id then, e.g. after admins change some group settings).
+Settings and the recent videos survive a group turning into a supergroup (Telegram gives it a new id then, e.g. after admins change some group settings).
 
 | Platform | Links | Status |
 |---|---|---|
@@ -46,7 +49,7 @@ Settings survive a group turning into a supergroup (Telegram gives it a new id t
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
 | Instagram | Reels, posts and carousels (photos + videos, sent as albums) | ⚠️ needs cookies from a logged-in account |
 
-**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. In groups, admins can set one language for the whole group with `/language`, and turn restart/shutdown messages on or off with `/notices`. All texts live in [`texts.py`](texts.py), so adding a language means adding one block there.
+**Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. A group speaks the language of whoever added the bot until admins pick one in `/settings` or with `/language`; they can turn restart/shutdown messages on or off in `/settings`. The bot's texts live in [`texts.py`](texts.py), the shared ones in [`botkit/texts.py`](botkit/texts.py).
 
 ## How it works
 
@@ -55,7 +58,7 @@ Settings survive a group turning into a supergroup (Telegram gives it a new id t
 3. The video is uploaded to a private "storage" channel to obtain a `file_id`.
 4. The placeholder is edited into the video. Repeated links are served instantly from cache.
 
-Each video is uploaded to the storage channel only once: the `file_id`s are saved to `media_cache.json` (keep it out of git), so they survive restarts, and short and full links to one post share an entry.
+Each video is uploaded to the storage channel only once: the `file_id`s are saved in the database (`data/bot.db`, out of git), so they survive restarts, and short and full links to one post share an entry.
 
 TikTok photo slideshows and Instagram carousels are sent as albums (up to 10 items per album) in private chats and groups; Instagram albums can mix photos and videos. In inline mode, where a message can hold only one media item, TikTok slideshows become a video with the original music, and Instagram posts send their first video, or a slideshow video if the post has only photos. Instagram posts are listed and downloaded with [gallery-dl](https://github.com/mikf/gallery-dl).
 
@@ -75,45 +78,39 @@ TikTok photo slideshows and Instagram carousels are sent as albums (up to 10 ite
 git clone https://github.com/artemi372/pastemedia-bot.git
 cd pastemedia-bot
 pip install -r requirements.txt
-cp .env.example .env   # fill in BOT_TOKEN and STORAGE_CHAT_ID
+cp .env.example .env   # fill in BOT_TOKEN, STORAGE_CHAT_ID and DEV_IDS
 python bot.py
 ```
 
-Commands in the terminal where the bot runs:
+The bot restarts itself after `/reload` (see [botkit](#botkit-shared-with-warden)). With systemd, use `Restart=on-failure`: `Restart=always` would start the bot again right after `/stop`.
 
-- `stop` (or Ctrl+C) — shut the bot down; groups get "🌙 The bot is off for now, back later" and the profile shows 🔴 Offline
-- `restart` — restart the bot with the latest code; groups get "🔄 The bot is restarting", and the bot starts again by itself a few seconds later
-- add `quiet` (`stop quiet`, `restart quiet`) to skip the messages in groups, e.g. while testing
+**Developers** are the Telegram user ids in `DEV_IDS` (comma-separated; `/id` shows yours). Only they see and can use the commands below; for everyone else they don't exist.
 
-Group admins can turn these messages off for their group with `/notices`.
+Commands in the terminal where the bot runs, or `/stop` and `/reload` in Telegram:
 
-**Running as a service (no terminal):** set `OWNER_ID` in `.env` to your Telegram user id (e.g. from [@userinfobot](https://t.me/userinfobot)), then send the bot `/stop` or `/restart` (optionally with `quiet`) in private chat. Only the owner can use them; for everyone else they don't exist. If `OWNER_ID` isn't set, the log shows the id of whoever tried. With systemd, use `Restart=on-failure`: `Restart=always` would start the bot again right after `/stop`.
+- `stop` — shut the bot down; groups get "🌙 Media Paste Bot is off for now — back later." and the profile shows 🔴 Offline
+- `reload` — restart with the latest code and `.env`; groups get "🔄 Media Paste Bot is restarting", and the bot is back a few seconds later
+- add `quiet` (`stop quiet`, `reload quiet`) to skip the messages in groups, e.g. while testing
+- `status` — how many chats the bot knows
 
-**Moderation** (owner only). Post these in the **storage channel**, where only you can post, or send them to the bot in private chat (needs `OWNER_ID`):
+Group admins can turn these messages off for their group in `/settings`. Ctrl+C or a service stop shut the bot down without messages. Use these instead of closing the window or the PyCharm Stop button: those kill the bot before it can update its status. The bot shows its status in its Telegram profile: 🟢 Online while running, 🔴 Offline after a stop. The group messages are cleaned up on the next start ("off for now" turns into "back online" for a minute). A hard crash or power loss skips the notice and the offline status.
+
+**Moderation** (developers). Post these in the **storage channel**, where only you can post, or send them to the bot in private chat:
 
 - `/ban` as a reply to a stored video bans whoever requested it (known for 7 days), or `/ban <user id> [reason]`. A reason starting with `request` marks a ban the user asked for (e.g. under the privacy policy): their settings are deleted, and they can lift it themselves with `/appeal`.
 - `/unban <user id>`
 - `/block` as a reply to a stored video (the one with the link caption), or `/block <link> [reason]`: the post is never downloaded again, its cached copy is forgotten and the stored one deleted. `/unblock <link>` allows it again.
 - `/bans` lists banned users and blocked posts.
 
-In the storage channel, the command and the answer delete themselves after a minute. Banned users get a message with the reason; their links are ignored silently in groups. With `/appeal <why>` they send you an appeal with Unban/Reject buttons, at most once a day.
+In the storage channel, the command and the answer delete themselves after a minute. Banned users get a message with the reason; their links are ignored silently in groups. With `/appeal <why>` they send the developers an appeal with Unban/Reject buttons, at most once a day.
 
-**Broadcast** (owner only, private chat, needs `OWNER_ID`; the command shows up only in your menu): send `/broadcast [silent] [language]`. The bot asks you to reply with the announcement (text with formatting, a photo with a caption, anything; one message, not an album) and says who gets it. Under your message it then shows "✅ Send to N chats" and "Cancel"; nothing goes out until you press Send. The message is copied as is, so it comes from the bot. When done, the bot reports how many chats got it and how many failed. All of the bot's replies in this flow are in your own language.
+**Broadcast** (developers, private chat): `/broadcast` opens a panel: 🔔 with sound or 🔕 silent, all chats or one language (`en`, `ru`, `et`). The announcement is a **reply to that panel**: text with formatting, a photo with a caption, anything (one message, not an album). HTML that starts with `<` goes out as a rich message (tables, lists, headings). The bot shows what will be sent with "✅ Send to N chats" and "Cancel"; nothing goes out until you press Send. The panel stays open, so patch notes can go out once per language: switch the language, reply with the next text. `/broadcast silent ru` opens the panel with those already picked.
 
-- `silent` (also `тихо`, `vaikselt`): no notifications, good for patch notes.
-- A language code (`en`, `ru`, `et`): only chats where the bot speaks that language (the group's or user's `/language` setting, otherwise the group's language or the user's Telegram app language). Patch notes go out once per language: `/broadcast ru silent`, `/broadcast en silent`, `/broadcast et silent`, each with its own text. Without a language, every chat gets it. Unknown words are ignored.
-
-It goes to every group and every user who wrote to the bot privately, except you and banned users. Flood limits are waited out; groups and users that blocked or kicked the bot are skipped, counted as failed and forgotten. Users who only use the bot inline can't be messaged.
+It goes to every group and every user who wrote to the bot privately, except you and banned users. Flood limits are waited out; groups and users that blocked or kicked the bot are skipped from then on and reported as unreachable. Users who only use the bot inline can't be messaged.
 
 In groups, the bot ignores links inside long texts (over 200 characters besides the link) or messages with more than two links, so announcements and ads with an Instagram link aren't reposted.
 
-**Moving to a new bot** (e.g. for a new username): the owner sends `/migrate @new_bot` to the old bot, checks the preview, then `/migrate @new_bot yes`. Every group gets a message with an "Add @new_bot" button (it asks for the *Delete messages* right), the old bot leaves all groups, its profile starts saying where it moved, and it shuts down. Then put the new token in `.env`, delete `media_cache.json` (file IDs only work for the bot that uploaded them), make the new bot an admin of the storage channel and start it. Group settings in `state.json` carry over once admins add the new bot.
-
-Use these instead of closing the window or the PyCharm Stop button: those kill the bot before it can post notices or update its status.
-
-The bot shows its status in its Telegram profile: 🟢 Online while running, 🔴 Offline after a normal stop.
-
-These group messages are deleted on the next start. The list of groups, per-user and per-group settings (like the chosen language) are kept in `state.json`, so they survive restarts (runtime data, keep it out of git). A hard crash or power loss skips the notice and the offline status.
+Known chats, settings, the `file_id` cache, recent videos, bans and blocked posts are kept in `data/bot.db` (runtime data, out of git). An older `state.json` and `media_cache.json` are imported on the first start and renamed to `*.imported`.
 
 ### Cookies (optional, for Instagram / YouTube)
 
@@ -133,6 +130,22 @@ The bot picks them up automatically. **Use a throwaway account**, not your main 
 - YouTube and Instagram actively fight downloaders, so they break more often than TikTok.
 - Slideshows are parsed from TikTok's web page, which can change without notice.
 - Platforms change things often — if downloads break, run `pip install -U "yt-dlp[default]"`.
+
+## botkit (shared with Warden)
+
+Everything this bot does the same way as [@dotawardenbot](https://t.me/dotawardenbot) lives in [`botkit/`](botkit), and the folder is **identical in both projects**: change it in one, then copy the whole folder to the other (`tests/test_botkit.py` too).
+
+| File | Contents |
+|---|---|
+| `config.py` | settings every bot has: `BOT_TOKEN`, `DEV_IDS`, `DEFAULT_LANG`, author, legal links, `AUTO_DELETE` |
+| `store.py` | SQLite tables: known chats (language, restart notices, reachable or not), settings, deletion queue |
+| `i18n.py`, `texts.py` | `t(lang, key)` and the shared texts in English, Russian and Estonian; a bot's own text wins |
+| `core.py` | languages, permissions (anonymous admins too), auto-deletion that survives restarts, safe sending (flood limits, supergroups, blocked chats), the profile status, command menus, restart notices |
+| `handlers.py` | `/privacy`, `/terms`, `/id`, `/language`, `/broadcast`, `/reload`, `/stop`, groups becoming supergroups, the bot being added or removed |
+| `rich.py` | rich messages (tables, lists, headings) with a fallback to ordinary HTML |
+| `runner.py` | the supervisor that restarts the bot on `/reload`, console commands, keeping Windows awake |
+
+Logs and the console speak English; users get their own language. Tests: `python -m pytest tests`. Style: `ruff check .` and `ruff format .` (PEP 8, PEP 257, see `ruff.toml`).
 
 ## Privacy and terms
 

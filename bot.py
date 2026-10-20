@@ -18,10 +18,16 @@ Inline flow:
 3. ``edit_message_media`` -- replace the placeholder with the video.
 
 Repeated requests for the same post are served from the ``file_id``
-cache, which is saved to disk. TikTok photo slideshows are sent as a
-photo album in private chats and groups. In inline mode they are
+cache, which is kept in the database. TikTok photo slideshows are sent
+as a photo album in private chats and groups. In inline mode they are
 rendered into an mp4 (images + original music) with ffmpeg, because an
 inline message can hold only one media item, not an album.
+
+What every bot does the same way (languages, auto-deletion in groups,
+/privacy, /broadcast, /reload, /stop, the restart notices, the profile
+status, the console) lives in botkit/, shared with Warden. Start the
+bot with ``python bot.py``: botkit's supervisor restarts it on
+/reload, so new code and a new .env are picked up.
 
 Author: @artemi372 on Telegram.
 Source code: https://github.com/artemi372/pastemedia-bot
@@ -39,7 +45,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from typing import Any, Awaitable, Callable
 
@@ -48,30 +53,12 @@ import yt_dlp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
-from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramForbiddenError,
-    TelegramMigrateToChat,
-    TelegramNetworkError,
-    TelegramRetryAfter,
-)
-from aiogram.filters import (
-    JOIN_TRANSITION,
-    LEAVE_TRANSITION,
-    ChatMemberUpdatedFilter,
-    Command,
-    CommandObject,
-    CommandStart,
-)
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
-    BotCommand,
-    BotCommandScopeAllGroupChats,
-    BotCommandScopeChat,
     CallbackQuery,
-    Chat,
     ChatMemberUpdated,
     ChosenInlineResult,
-    ForceReply,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -88,34 +75,34 @@ from aiogram.types import (
     User,
 )
 from aiogram.utils.chat_action import ChatActionSender
-from dotenv import load_dotenv
 
-from texts import DEFAULT_LANG, LANG_NAMES, TEXTS, detect_lang, t
+from botkit import (
+    TTL_MEDIUM,
+    TTL_SHORT,
+    BotKit,
+    is_private,
+    load_config,
+    run,
+    setup_logging,
+)
+from storage import BASE, Storage
+from texts import t
 
 # ---------- configuration ----------
 
-load_dotenv()
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+REPO_URL = "https://github.com/artemi372/pastemedia-bot"
+# BOT_TOKEN, DEV_IDS, the author and the Privacy Policy / Terms of Use
+# links (required by Telegram's rules for bots; set PRIVACY_URL and
+# TERMS_URL in .env when running your own copy, empty hides the link).
+cfg = load_config(
+    bot_name="Media Paste Bot",
+    default_lang="en",
+    privacy_url="https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07",
+    terms_url="https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07",
+    repo_url=REPO_URL,
+)
 # Private channel where the bot is an admin, id like -100...
 STORAGE_CHAT_ID = int(os.environ["STORAGE_CHAT_ID"])
-# Telegram user id of the bot's owner (optional). Only the owner can
-# stop or restart the bot with /stop and /restart in private chat,
-# which is handy when it runs as a service with no terminal.
-OWNER_ID = int(os.environ.get("OWNER_ID") or 0)
-
-REPO_URL = "https://github.com/artemi372/pastemedia-bot"
-# Telegram username of the author, shown in /start, /help and the
-# bot profile.
-AUTHOR = "artemi372"
-# Privacy Policy and Terms of Use, required by Telegram's rules for
-# bots. Set PRIVACY_URL / TERMS_URL in .env to point to your own pages
-# when running your own copy; an empty value hides the link.
-PRIVACY_URL = os.environ.get(
-    "PRIVACY_URL", "https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07"
-)
-TERMS_URL = os.environ.get(
-    "TERMS_URL", "https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07"
-)
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 # Videos above MAX_BYTES are re-encoded with ffmpeg to fit. Sources
 # above MAX_SOURCE_BYTES are refused right away: squeezing them into
@@ -134,12 +121,7 @@ COMPRESS_TIMEOUT = 300  # seconds for one ffmpeg run
 # than this around the link, or with more links than this.
 GROUP_TEXT_LIMIT = 200
 GROUP_URL_LIMIT = 2
-# Who requested each upload to the storage channel is kept this long,
-# so the owner can ban whoever downloads forbidden content.
-UPLOADS_MAX_AGE = 7 * 24 * 60 * 60
-UPLOADS_LIMIT = 3000
 APPEAL_COOLDOWN = 24 * 60 * 60  # seconds between appeals of one user
-ADMIN_REPLY_TTL = 60  # seconds before replies in the storage channel go
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link. Bots can only use Telegram's
 # standard reaction emoji.
@@ -149,30 +131,14 @@ REACTION_FAILED = "🤷"
 # /cleanup. Only "keep" replies to it; the others delete it and send
 # the media as a separate message with an optional caption.
 CLEANUP_MODES = ("keep", "link_user", "user", "none")
-ERROR_TTL = 15  # seconds before error messages in groups are deleted
 SLOW_AFTER = 20  # seconds before "taking longer than usual"
 DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
 # Seconds to upload a file to Telegram. aiogram's default of 60 is too
 # short for a 1080p video of tens of megabytes on a home connection.
 UPLOAD_TIMEOUT = 300
-# If a video that is among the last RECENT_LIMIT ones in a group, and
-# not older than RECENT_MAX_AGE seconds, is posted again, the bot
-# points to the earlier message instead of sending it once more.
-RECENT_LIMIT = 50
 # Max length of the sender's comment copied under the media. Telegram
 # allows 1024 characters in a caption; the rest is the link and sender.
 COMMENT_LIMIT = 700
-RECENT_MAX_AGE = 7 * 24 * 60 * 60
-
-# How the bot is being stopped: "shutdown" (off for a while, the
-# default, also for Ctrl+C) or "restart" (back in a few seconds).
-stop_mode = "shutdown"
-# True after "stop quiet" / "restart quiet": no messages in groups.
-quiet_stop = False
-# Exit code that asks the supervisor to start the bot again.
-RESTART_EXIT_CODE = 3
-# Set in the bot process started by the supervisor.
-CHILD_ENV = "PASTEMEDIA_BOT_CHILD"
 SLIDE_SECONDS = 2.5  # how long each slideshow image is shown
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -208,37 +174,33 @@ TRAILING = ".,!?;:)]}>»\"'"
 # Optional cookies (Netscape cookies.txt format) for platforms that
 # block anonymous access. Keep this folder out of git: cookies are as
 # secret as a password.
-COOKIES_DIR = "cookies"
+COOKIES_DIR = BASE / "cookies"
 
-# Persistent state that survives restarts. Keep it out of git: it is
-# runtime data, not code.
-STATE_FILE = "state.json"
-# Telegram file_ids of everything uploaded to the storage channel, so
-# a video is uploaded there once, not after every restart or for every
-# kind of link to it. Also runtime data, keep it out of git.
-CACHE_FILE = "media_cache.json"
-CACHE_LIMIT = 5000  # entries per kind; the oldest are dropped
-
-ALLOWED_UPDATES = [
-    "message",
-    "inline_query",
-    "chosen_inline_result",
-    "callback_query",
-    "my_chat_member",
-    # Owner commands in the storage channel.
-    "channel_post",
-]
-
-logging.basicConfig(level=logging.INFO)
+setup_logging()
+log = logging.getLogger("bot")
 router = Router()
+# The database: known chats and settings (botkit), the file_id cache,
+# recent videos in groups, bans, blocked posts (storage.py). Runtime
+# data, kept in data/ and out of git.
+db = Storage()
+# Owner commands, also usable in the storage channel.
+ADMIN_COMMANDS = ("ban", "unban", "block", "unblock", "bans")
+kit = BotKit(
+    cfg,
+    db,
+    menu=["start", "help", "settings", "language", "privacy"],
+    group_menu=["settings", "cleanup", "language", "help", "privacy"],
+    dev_menu=["bans"],
+    commands={"start", "help", "settings", "cleanup", "appeal", "terms"}
+    | set(ADMIN_COMMANDS),
+)
+# The shared helpers, under the names the rest of the code uses.
+lang_of = kit.lang_of
+reply = kit.reply
+edit = kit.edit
 
 # ---------- runtime state ----------
 
-# Saved to CACHE_FILE, keyed by media_key():
-#   videos: key -> Telegram file_id of the video
-#   albums: key -> album items as [kind, file_id], kind is "photo" or
-#   "video"
-media_cache: dict[str, dict[str, Any]] = {"videos": {}, "albums": {}}
 # Instagram post url -> its files as listed by gallery-dl (in memory)
 instagram_posts: dict[str, list[dict]] = {}
 # short url -> full url after redirects (in memory)
@@ -248,33 +210,6 @@ locks: dict[str, asyncio.Lock] = {}
 # Re-encoding takes all CPU cores, so only one runs at a time; the
 # others wait in line.
 compress_slot = asyncio.Semaphore(1)
-# Running delayed deletions (kept so they aren't garbage-collected).
-background_tasks: set[asyncio.Task] = set()
-# Saved to STATE_FILE:
-#   users: str(user_id) -> per-user settings, e.g. {"lang": "et"}
-#   known_users: str(user_id) -> language of their Telegram app, for
-#   users who wrote to the bot privately; /broadcast sends to them
-#   chats: str(chat_id) -> per-group settings set by admins
-#   groups: str(chat_id) -> language of the group
-#   restart_notices: str(chat_id) -> message_id of the notice
-state: dict[str, dict[str, Any]] = {
-    "users": {},
-    "known_users": {},
-    "chats": {},
-    "groups": {},
-    "restart_notices": {},
-    # chat id -> {media key: [message id, unix time]}, oldest first.
-    "recent": {},
-    # Set by /migrate: {"from": old bot username, "to": new one}.
-    "moved": {},
-    # user id -> {"kind": "abuse" or "request", "reason", "at",
-    # "appealed"}; "request" means the user asked not to be processed.
-    "bans": {},
-    # media key -> {"reason", "at"}: posts the bot won't download.
-    "blocked": {},
-    # storage message id -> [user id, unix time]: who requested it.
-    "uploads": {},
-}
 
 
 class TooBigError(RuntimeError):
@@ -289,278 +224,18 @@ class DownloadTimeoutError(RuntimeError):
     """The download took longer than DOWNLOAD_TIMEOUT."""
 
 
-def load_state():
-    """Load the persistent state from STATE_FILE, if it exists."""
-    try:
-        with open(STATE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        for key in state:
-            state[key] = data.get(key, {})
-    except FileNotFoundError:
-        pass
-    except Exception:
-        logging.exception(
-            "couldn't read %s, starting with empty state", STATE_FILE
-        )
-
-
-def load_media_cache():
-    """Load the saved file_ids from CACHE_FILE, if it exists."""
-    try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        for kind in media_cache:
-            media_cache[kind] = data.get(kind, {})
-    except FileNotFoundError:
-        pass
-    except Exception:
-        logging.exception(
-            "couldn't read %s, starting with empty cache", CACHE_FILE
-        )
-
-
-def cache_get(kind: str, key: str) -> Any:
-    """Return a cached file_id (or album items), or None."""
-    return media_cache[kind].get(key)
-
-
-def cache_put(kind: str, key: str, value: Any):
-    """Save a file_id (or album items) and write CACHE_FILE."""
-    entries = media_cache[kind]
-    entries[key] = value
-    while len(entries) > CACHE_LIMIT:
-        del entries[next(iter(entries))]
-    tmp = CACHE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(media_cache, f, ensure_ascii=False)
-    os.replace(tmp, CACHE_FILE)
-
-
-def cache_drop(key: str):
-    """Forget the cached file_ids of a post, so it's never reused."""
-    for kind in media_cache:
-        media_cache[kind].pop(key, None)
-    tmp = CACHE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(media_cache, f, ensure_ascii=False)
-    os.replace(tmp, CACHE_FILE)
-
-
-def save_state():
-    """Save the persistent state to STATE_FILE atomically.
-
-    The data is written to a temporary file first and then moved into
-    place, so a crash in the middle never leaves a broken file.
-    """
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, STATE_FILE)
-
-
-def remember_group(chat_id: int, lang: str):
-    """Add a group to the persistent list, if it isn't there yet."""
-    if str(chat_id) not in state["groups"]:
-        state["groups"][str(chat_id)] = lang
-        save_state()
-
-
-def user_settings(user_id: int) -> dict[str, Any]:
-    """Return the saved settings of a user (empty if none)."""
-    return state["users"].get(str(user_id), {})
-
-
-def set_user_setting(user_id: int, key: str, value: Any):
-    """Save one setting of a user to the persistent state."""
-    state["users"].setdefault(str(user_id), {})[key] = value
-    save_state()
-
-
-def set_chat_setting(chat_id: int, key: str, value: Any):
-    """Save one setting of a group to the persistent state."""
-    state["chats"].setdefault(str(chat_id), {})[key] = value
-    save_state()
-
-
-def cleanup_mode(chat_id: int | str) -> str:
+def cleanup_mode(chat_id: int) -> str:
     """Return the /cleanup mode of a group ("keep" by default)."""
-    mode = state["chats"].get(str(chat_id), {}).get("cleanup", "keep")
+    mode = db.get_setting(f"cleanup:{chat_id}", "keep")
     return mode if mode in CLEANUP_MODES else "keep"
-
-
-def notices_enabled(chat_id: int | str) -> bool:
-    """Tell whether a group wants restart and shutdown notices.
-
-    They are on by default; group admins can turn them off with
-    /notices.
-    """
-    return state["chats"].get(str(chat_id), {}).get("notices", True)
-
-
-def remember_user(user: User):
-    """Remember a user who wrote to the bot, for /broadcast.
-
-    Only users with a private chat can get messages from the bot. The
-    language of their Telegram app is kept too, so a broadcast can go
-    to the speakers of one language only.
-    """
-    key = str(user.id)
-    lang = detect_lang(user.language_code)
-    if key not in state["bans"] and state["known_users"].get(key) != lang:
-        state["known_users"][key] = lang
-        save_state()
-
-
-def forget_group(chat_id: int):
-    """Remove a group from the persistent list."""
-    if state["groups"].pop(str(chat_id), None) is not None:
-        save_state()
-
-
-def move_chat(old_id: int | str, new_id: int | str):
-    """Carry a group's data over to its new id.
-
-    When a group becomes a supergroup (for example, after an admin
-    changes some of its settings), Telegram gives it a new id, and
-    everything saved under the old one would be lost.
-    """
-    old_id, new_id = str(old_id), str(new_id)
-    changed = False
-    for key in ("chats", "groups", "recent", "restart_notices"):
-        old = state[key].pop(old_id, None)
-        if old is None:
-            continue
-        changed = True
-        if key == "restart_notices":
-            continue  # that message stays in the old chat
-        new = state[key].get(new_id)
-        if isinstance(old, dict) and isinstance(new, dict):
-            # Settings made in the new chat win.
-            state[key][new_id] = {**old, **new}
-        elif new is None:
-            state[key][new_id] = old
-    if changed:
-        logging.info("group %s is now %s, settings moved", old_id, new_id)
-        save_state()
-
-
-def earlier_post(chat_id: int, key: str) -> int | None:
-    """Return the id of a recent message with the same media, if any."""
-    entry = state["recent"].get(str(chat_id), {}).get(key)
-    if entry and time.time() - entry[1] < RECENT_MAX_AGE:
-        return entry[0]
-    return None
-
-
-def remember_post(chat_id: int, key: str, message_id: int):
-    """Save the message with some media as the latest one in a chat."""
-    recent = state["recent"].setdefault(str(chat_id), {})
-    recent.pop(key, None)  # move it to the end, as the newest
-    recent[key] = [message_id, int(time.time())]
-    while len(recent) > RECENT_LIMIT:
-        del recent[next(iter(recent))]
-    save_state()
 
 
 def ban_of(user: User | int | None) -> dict | None:
     """Return the ban of a user, or None if they aren't banned."""
-    if user is None:
-        return None
-    user_id = user if isinstance(user, int) else user.id
-    return state["bans"].get(str(user_id))
-
-
-def ban_user(user_id: int, reason: str, kind: str = "abuse"):
-    """Put a user on the ban list.
-
-    kind "request" is for users who asked the bot to stop processing
-    their data: their settings are deleted too, and they can lift the
-    ban themselves with /appeal.
-    """
-    state["bans"][str(user_id)] = {
-        "kind": kind,
-        "reason": reason,
-        "at": int(time.time()),
-    }
-    if kind == "request":
-        state["users"].pop(str(user_id), None)
-        state["known_users"].pop(str(user_id), None)
-    save_state()
-
-
-def unban_user(user_id: int) -> bool:
-    """Remove a user from the ban list; tell whether they were on it."""
-    if state["bans"].pop(str(user_id), None) is None:
-        return False
-    save_state()
-    return True
-
-
-def remember_upload(message_ids: list[int], user_id: int | None):
-    """Save who requested the media uploaded to the storage channel."""
-    if not user_id:
-        return
-    uploads = state["uploads"]
-    now = int(time.time())
-    for message_id in message_ids:
-        uploads[str(message_id)] = [user_id, now]
-    for key in list(uploads):
-        if len(uploads) > UPLOADS_LIMIT or now - uploads[key][1] > (
-            UPLOADS_MAX_AGE
-        ):
-            del uploads[key]
-    save_state()
-
-
-def uploader_of(message_id: int) -> int | None:
-    """Return who requested a storage message, if still known."""
-    entry = state["uploads"].get(str(message_id))
-    if entry and time.time() - entry[1] <= UPLOADS_MAX_AGE:
-        return entry[0]
-    return None
+    return db.ban_of(user.id if isinstance(user, User) else user)
 
 
 # ---------- helpers ----------
-
-
-def lang_of(user: User | None) -> str:
-    """Return the language to talk to a user in.
-
-    A manual choice from /language wins; otherwise the language of the
-    user's Telegram app is used.
-    """
-    if user is None:
-        return DEFAULT_LANG
-    saved = user_settings(user.id).get("lang")
-    return saved if saved in TEXTS else detect_lang(user.language_code)
-
-
-def group_lang(chat_id: int, user: User | None) -> str:
-    """Return the language to talk in inside a group.
-
-    A language set by the group admins wins; otherwise the language of
-    the user the bot is answering is used.
-    """
-    saved = state["chats"].get(str(chat_id), {}).get("lang")
-    return saved if saved in TEXTS else lang_of(user)
-
-
-def delete_later(
-    bot: Bot, chat_id: int, message_id: int, ttl: float = ERROR_TTL
-):
-    """Delete a message after `ttl` seconds, in the background."""
-
-    async def worker():
-        """Wait, then delete; the message may already be gone."""
-        await asyncio.sleep(ttl)
-        try:
-            await bot.delete_message(chat_id, message_id)
-        except Exception as e:
-            logging.warning("couldn't delete message %s: %s", message_id, e)
-
-    task = asyncio.create_task(worker())
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
 
 
 def error_text(lang: str, e: Exception) -> str:
@@ -583,7 +258,7 @@ def error_text(lang: str, e: Exception) -> str:
         for s in ("log in for access", "login required", "confirm your age")
     ):
         return t(lang, "login_needed")
-    return t(lang, "failed")
+    return t(lang, "failed") + kit.contact_hint(lang)
 
 
 @contextlib.asynccontextmanager
@@ -600,7 +275,7 @@ async def slow_notice(action: Callable[[], Awaitable[Any]]):
         try:
             await action()
         except Exception as e:
-            logging.warning("couldn't show the slow notice: %s", e)
+            log.warning("couldn't show the slow notice: %s", e)
 
     task = asyncio.create_task(worker())
     try:
@@ -633,8 +308,8 @@ def platform_of(url: str) -> str:
 
 def cookies_for(platform: str) -> str | None:
     """Return the path to cookies/<platform>.txt, if it exists."""
-    path = os.path.join(COOKIES_DIR, f"{platform}.txt")
-    return path if os.path.isfile(path) else None
+    path = COOKIES_DIR / f"{platform}.txt"
+    return str(path) if path.is_file() else None
 
 
 def result_id(url: str) -> str:
@@ -764,7 +439,7 @@ def _page_json(html: str) -> list[dict]:
             try:
                 blobs.append(json.loads(m.group(1)))
             except json.JSONDecodeError:
-                logging.warning("couldn't parse %s JSON", script_id)
+                log.warning("couldn't parse %s JSON", script_id)
     return blobs
 
 
@@ -816,7 +491,7 @@ def _fetch_slideshow_item(c: httpx.Client, url: str) -> dict:
                 return posts[0]
 
     # Log what the page did contain, so the next fix is quick.
-    logging.warning(
+    log.warning(
         "no slideshow data for %s; page keys: %s",
         url,
         sorted(set(map(str, seen_keys))),
@@ -967,7 +642,7 @@ def probe_video(path: str) -> dict:
             "duration": round(float(data["format"]["duration"])),
         }
     except Exception:
-        logging.warning("couldn't probe %s", path)
+        log.warning("couldn't probe %s", path)
         return {}
 
 
@@ -1121,7 +796,7 @@ def download_instagram_reel(url: str, outdir: str) -> tuple[str, dict]:
     except TooBigError:
         raise
     except Exception as e:
-        logging.warning("yt-dlp failed on %s (%s), trying gallery-dl", url, e)
+        log.warning("yt-dlp failed on %s (%s), trying gallery-dl", url, e)
     return download_instagram_single(url, outdir)
 
 
@@ -1259,7 +934,7 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
     out = os.path.join(outdir, "compressed.mp4")
     src_audio = audio_streams(src)
     if src_audio == 0:
-        logging.warning("%s has no sound before compression", src)
+        log.warning("%s has no sound before compression", src)
     for factor in (1.0, 0.85):
         kbps, side = compress_plan(duration, factor)
         # Limit the shorter side, so portrait Shorts and landscape
@@ -1277,7 +952,7 @@ def compress_video(src: str, outdir: str) -> tuple[str, dict]:
         cmd += ["-bufsize", f"{kbps * 2}k", "-pix_fmt", "yuv420p"]
         cmd += ["-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "2"]
         cmd += ["-movflags", "+faststart", out]
-        logging.info(
+        log.info(
             "compressing %s s video to %s kbit/s, %sp", duration, kbps, side
         )
         # The timeout kills ffmpeg, so nothing keeps running after it.
@@ -1299,13 +974,13 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
     post share the cache entry. Blocked posts raise BlockedError.
     """
     key = await asyncio.to_thread(media_key, url)
-    if key in state["blocked"]:
+    if db.is_blocked(key):
         raise BlockedError(key)
-    if cached := cache_get("videos", key):
+    if cached := db.media_get("videos", key):
         return cached
     lock = locks.setdefault(key, asyncio.Lock())
     async with lock:
-        if cached := cache_get("videos", key):
+        if cached := db.media_get("videos", key):
             return cached
         # A timed-out download may still hold its files open.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1327,8 +1002,8 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
             )
         if msg.video is None:
             raise RuntimeError("Telegram didn't return the uploaded video")
-        remember_upload([msg.message_id], user_id)
-        cache_put("videos", key, msg.video.file_id)
+        db.remember_upload([msg.message_id], user_id)
+        db.media_put("videos", key, msg.video.file_id)
         return msg.video.file_id
 
 
@@ -1338,9 +1013,7 @@ async def compress(path: str, outdir: str) -> tuple[str, dict]:
     Each ffmpeg run has its own timeout; this one also covers waiting
     in line and a second try.
     """
-    logging.info(
-        "%s is %.0f MB, compressing", path, os.path.getsize(path) / 2**20
-    )
+    log.info("%s is %.0f MB, compressing", path, os.path.getsize(path) / 2**20)
     try:
         async with compress_slot:
             return await asyncio.wait_for(
@@ -1450,13 +1123,13 @@ async def get_album_items(
     post share the cache entry. Blocked posts raise BlockedError.
     """
     key = await asyncio.to_thread(media_key, url)
-    if key in state["blocked"]:
+    if db.is_blocked(key):
         raise BlockedError(key)
-    if cached := cache_get("albums", key):
+    if cached := db.media_get("albums", key):
         return [tuple(item) for item in cached]
     lock = locks.setdefault("album:" + key, asyncio.Lock())
     async with lock:
-        if cached := cache_get("albums", key):
+        if cached := db.media_get("albums", key):
             return [tuple(item) for item in cached]
         items = []
         message_ids = []
@@ -1467,10 +1140,10 @@ async def get_album_items(
                     message_ids.append(msg.message_id)
                     if item := sent_item(msg):
                         items.append(item)
-        remember_upload(message_ids, user_id)
+        db.remember_upload(message_ids, user_id)
         if not items:
             raise RuntimeError("Telegram didn't return the uploaded files")
-        cache_put("albums", key, [list(item) for item in items])
+        db.media_put("albums", key, [list(item) for item in items])
         return items
 
 
@@ -1486,34 +1159,7 @@ async def react(bot: Bot, msg: Message, emoji: str | None):
             msg.chat.id, msg.message_id, reaction=reaction
         )
     except Exception as e:
-        logging.info("couldn't set reaction %r: %s", emoji, e)
-
-
-def is_silent(chat: Chat) -> bool:
-    """Tell whether messages to a chat should come without a sound.
-
-    Groups get silent messages so the bot doesn't buzz everyone's
-    phone; in private chats the user is waiting, so a sound helps.
-    """
-    return chat.type != ChatType.PRIVATE
-
-
-def credits(lang: str) -> str:
-    """Return the author and source code lines for a message."""
-    return t(lang, "source_line", author=AUTHOR, repo=REPO_URL)
-
-
-def legal_links(lang: str) -> str:
-    """Return a line with links to the terms and the privacy policy."""
-    links = [
-        f'<a href="{html.escape(url)}">{t(lang, name)}</a>'
-        for url, name in (
-            (TERMS_URL, "terms_name"),
-            (PRIVACY_URL, "privacy_name"),
-        )
-        if url
-    ]
-    return t(lang, "legal_links", links=" · ".join(links)) if links else ""
+        log.info("couldn't set reaction %r: %s", emoji, e)
 
 
 def sender_mention(user: User | None) -> str:
@@ -1592,10 +1238,10 @@ async def reply_with_media(
     videos, up to 10 per album), everything else as a video. By default
     the media replies to the message; with as_reply=False it's sent as
     a separate message, with `caption` (HTML) under it or under the
-    first album. In groups it comes without a notification. Returns the
-    id of the first message sent.
+    first album. In groups it comes without a notification (botkit
+    does that). Returns the id of the first message sent.
     """
-    options = {"disable_notification": is_silent(msg.chat)}
+    options = {}
     if as_reply:
         options["reply_parameters"] = ReplyParameters(
             message_id=msg.message_id
@@ -1646,252 +1292,20 @@ private = F.chat.type == ChatType.PRIVATE
 @router.message(CommandStart(), private)
 async def on_start(msg: Message, bot: Bot):
     """Greet the user and explain how to use the bot."""
-    lang = lang_of(msg.from_user)
+    lang = lang_of(msg.chat.id, msg.from_user)
     me = await bot.me()
     # The button opens the chat picker with "@bot " already typed in.
     try_button = InlineKeyboardButton(
         text=t(lang, "try_button"), switch_inline_query=""
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[try_button]])
-    text = (
-        t(lang, "start", bot=me.username) + legal_links(lang) + credits(lang)
-    )
+    text = t(lang, "start", bot=me.username) + kit.footer(lang)
     # No big GitHub preview card under the greeting.
     await msg.answer(
         text,
         reply_markup=kb,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
-
-
-@router.message(Command("language"), private)
-async def on_language(msg: Message):
-    """Show the language picker."""
-    lang = lang_of(msg.from_user)
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"lang:{code}")]
-            for code, name in LANG_NAMES.items()
-        ]
-    )
-    await msg.answer(t(lang, "choose_lang"), reply_markup=kb)
-
-
-@router.callback_query(F.data.startswith("lang:"))
-async def on_language_chosen(c: CallbackQuery):
-    """Save the chosen language and confirm it."""
-    code = (c.data or "").split(":", 1)[-1]
-    if code not in TEXTS:
-        await c.answer()
-        return
-    set_user_setting(c.from_user.id, "lang", code)
-    # Messages older than 48 hours come as InaccessibleMessage and
-    # can't be edited; confirm with a popup instead.
-    if isinstance(c.message, Message):
-        await c.message.edit_text(t(code, "lang_set"))
-        await c.answer()
-    else:
-        await c.answer(t(code, "lang_set"))
-
-
-# ---------- owner: /broadcast ----------
-
-# The owner sends "/broadcast [silent] [language]", replies with the
-# announcement (text, a photo with a caption, anything), checks it and
-# presses "Send". The message is copied as is to every group and every
-# user who wrote to the bot privately. The owner's texts are in the
-# owner's language.
-BROADCAST_DELAY = 0.05  # Telegram allows about 30 messages per second
-SILENT_WORDS = ("silent", "тихо", "vaikselt")
-# The owner's next message is the announcement: {"silent": bool,
-# "lang": target language or None}. In memory only.
-broadcast_pending: dict[str, Any] = {}
-# Broadcasts waiting for the "Send" button, by token: {"msg": id of the
-# owner's message, "silent", "lang"}. Several can wait at once.
-broadcasts: dict[str, dict[str, Any]] = {}
-
-
-def is_owner(user: User | None) -> bool:
-    """Return True if the user is the bot's owner (OWNER_ID)."""
-    return bool(OWNER_ID) and user is not None and user.id == OWNER_ID
-
-
-def chat_lang(chat_id: str) -> str:
-    """Return the language the bot uses in a group or private chat.
-
-    The same choice as when answering there: the group's or user's
-    /language setting, else the group's or app's language.
-    """
-    if chat_id.startswith("-"):
-        saved = state["chats"].get(chat_id, {}).get("lang")
-        lang = saved or state["groups"].get(chat_id)
-    else:
-        saved = state["users"].get(chat_id, {}).get("lang")
-        lang = saved or state["known_users"].get(chat_id)
-    return lang if lang in TEXTS else DEFAULT_LANG
-
-
-def broadcast_targets(lang: str | None = None) -> list[int]:
-    """Return the chats a broadcast goes to: groups, then users.
-
-    With `lang`, only the chats where the bot speaks that language.
-    Banned users and those who asked not to be processed are skipped,
-    and so is the owner, who already has the message.
-    """
-    users = set(state["known_users"]) | set(state["users"])
-    users -= set(state["bans"])
-    users.discard(str(OWNER_ID))
-    chats = list(state["groups"]) + sorted(users)
-    return [int(c) for c in chats if not lang or chat_lang(c) == lang]
-
-
-@router.message(Command("broadcast"), private)
-async def on_broadcast(msg: Message, command: CommandObject):
-    """Ask the owner for the announcement (owner only).
-
-    Optional arguments, in any order: "silent" ("тихо", "vaikselt")
-    sends it without notifications, e.g. for patch notes; a language
-    code (en, ru, et) sends it only to chats where the bot speaks that
-    language, so patch notes can go out once per language. Unknown
-    arguments are ignored. Everyone else gets the usual hint, as if
-    the command didn't exist.
-    """
-    if not is_owner(msg.from_user):
-        await on_other(msg)
-        return
-    lang = lang_of(msg.from_user)
-    args = (command.args or "").lower().split()
-    silent = any(a in SILENT_WORDS for a in args)
-    # A language picks only the chats that use it; none means all.
-    target = next((a for a in args if a in TEXTS), None)
-    if target:
-        recipients = t(lang, "broadcast_to_lang", name=LANG_NAMES[target])
-    else:
-        recipients = t(
-            lang, "broadcast_to_all", langs=" / ".join(sorted(TEXTS))
-        )
-    await msg.answer(
-        t(lang, "broadcast_ask_silent" if silent else "broadcast_ask")
-        + "\n"
-        + recipients,
-        reply_markup=ForceReply(selective=True),
-    )
-    broadcast_pending.clear()
-    broadcast_pending.update(silent=silent, lang=target)
-
-
-def is_broadcast_answer(msg: Message) -> bool:
-    """Return True for the owner's announcement after /broadcast."""
-    text = msg.text or ""
-    return (
-        bool(broadcast_pending)
-        and is_owner(msg.from_user)
-        and not text.startswith("/")
-    )
-
-
-# Registered before on_link, so an announcement with a link is
-# broadcast instead of downloaded.
-@router.message(is_broadcast_answer, private)
-async def on_broadcast_answer(msg: Message):
-    """Show the send / cancel buttons under the announcement."""
-    job = {**broadcast_pending, "msg": msg.message_id}
-    broadcast_pending.clear()
-    lang = lang_of(msg.from_user)
-    count = len(broadcast_targets(job["lang"]))
-    token = str(msg.message_id)
-    broadcasts[token] = job
-    go = InlineKeyboardButton(
-        text=t(lang, "broadcast_go", n=count), callback_data=f"bc:go:{token}"
-    )
-    cancel = InlineKeyboardButton(
-        text=t(lang, "broadcast_cancel"), callback_data=f"bc:no:{token}"
-    )
-    mode = "broadcast_silent" if job["silent"] else "broadcast_loud"
-    await msg.reply(
-        t(lang, "broadcast_confirm", n=count, mode=t(lang, mode)),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[go], [cancel]]),
-    )
-
-
-@router.callback_query(F.data.startswith("bc:"))
-async def on_broadcast_confirm(c: CallbackQuery, bot: Bot):
-    """Send the confirmed announcement, or cancel it."""
-    lang = lang_of(c.from_user)
-    _, action, token = (c.data or "::").split(":", 2)
-    job = broadcasts.get(token)
-    if not is_owner(c.from_user) or not job:
-        await c.answer(t(lang, "broadcast_expired"), show_alert=True)
-        return
-    # Removed before sending, so a second tap can't send it twice.
-    broadcasts.pop(token, None)
-    await c.answer()
-    if not isinstance(c.message, Message):
-        return
-    if action != "go":
-        await c.message.edit_text(t(lang, "broadcast_cancelled"))
-        return
-    await c.message.edit_text(t(lang, "broadcast_started"))
-    # In the background, so the bot keeps answering everyone else.
-    task = asyncio.create_task(run_broadcast(bot, job, c.message, lang))
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
-
-
-async def broadcast_one(
-    bot: Bot, chat_id: int, source: int, silent: bool
-) -> bool:
-    """Copy the owner's message to one chat; return True if sent.
-
-    Flood limits are waited out. Chats that blocked or kicked the bot
-    are forgotten. A group that became a supergroup gets the message
-    at its new id.
-    """
-    while True:
-        try:
-            await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=OWNER_ID,
-                message_id=source,
-                disable_notification=silent,
-            )
-            return True
-        except TelegramRetryAfter as e:
-            # Too fast for Telegram: wait as long as it asks.
-            await asyncio.sleep(e.retry_after + 1)
-        except TelegramMigrateToChat as e:
-            move_chat(chat_id, e.migrate_to_chat_id)
-            chat_id = e.migrate_to_chat_id
-        except TelegramForbiddenError as e:
-            logging.info("broadcast: dropping %s: %s", chat_id, e)
-            if chat_id < 0:
-                forget_group(chat_id)
-            elif state["known_users"].pop(str(chat_id), None) is not None:
-                save_state()
-            return False
-        except Exception as e:
-            logging.info("broadcast: skipped %s: %s", chat_id, e)
-            return False
-
-
-async def run_broadcast(bot: Bot, job: dict, status: Message, lang: str):
-    """Copy the announcement to every chat; report the result."""
-    sent = failed = 0
-    for chat_id in broadcast_targets(job["lang"]):
-        if await broadcast_one(bot, chat_id, job["msg"], job["silent"]):
-            sent += 1
-        else:
-            failed += 1
-        await asyncio.sleep(BROADCAST_DELAY)
-    logging.info("broadcast: delivered %s, failed %s", sent, failed)
-    try:
-        await status.edit_text(
-            t(lang, "broadcast_done", sent=sent, failed=failed)
-        )
-    except Exception:
-        await bot.send_message(
-            OWNER_ID, t(lang, "broadcast_done", sent=sent, failed=failed)
-        )
 
 
 def ban_text(lang: str, ban: dict) -> str:
@@ -1907,9 +1321,10 @@ def ban_text(lang: str, ban: dict) -> str:
 )
 async def on_link(msg: Message, bot: Bot):
     """Reply with the media to a link sent directly to the bot."""
-    lang = lang_of(msg.from_user)
+    lang = lang_of(msg.chat.id, msg.from_user)
     if ban := ban_of(msg.from_user):
-        ban["lang"] = lang
+        # Answers to an appeal come in the language seen here.
+        db.update_ban(msg.from_user.id, lang=lang)
         await msg.answer(ban_text(lang, ban))
         return
     url = find_link(msg.text)
@@ -1919,7 +1334,7 @@ async def on_link(msg: Message, bot: Bot):
         async with slow_notice(lambda: status.edit_text(t(lang, "slow"))):
             await reply_with_media(bot, msg, url)
     except Exception as e:
-        logging.exception("download failed: %s", url)
+        log.exception("download failed: %s", url)
         await react(bot, msg, REACTION_FAILED)
         # In private chats the error stays, so the user can see what
         # happened with their link.
@@ -1930,151 +1345,73 @@ async def on_link(msg: Message, bot: Bot):
     try:
         await status.delete()
     except Exception:
-        logging.warning("couldn't delete status message")
+        log.warning("couldn't delete status message")
 
 
 @router.message(Command("help"))
 async def on_help(msg: Message, bot: Bot):
     """Explain how to use the bot and who can run which command."""
-    if msg.chat.type == ChatType.PRIVATE:
-        lang = lang_of(msg.from_user)
-    else:
-        lang = group_lang(msg.chat.id, msg.from_user)
+    lang = lang_of(msg.chat.id, msg.from_user)
     me = await bot.me()
-    await msg.answer(
-        t(lang, "help", bot=me.username) + legal_links(lang) + credits(lang),
-        disable_notification=is_silent(msg.chat),
+    text = t(lang, "help", bot=me.username)
+    if not is_private(msg):
+        text += t(lang, "help.autodelete")
+    elif kit.is_dev(msg.from_user):
+        # Developer commands only in a private chat: in a group
+        # everyone would see them.
+        text += kit.dev_help(lang)
+    await reply(
+        msg,
+        text + kit.footer(lang),
+        TTL_MEDIUM,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
 
 
-@router.message(Command("privacy", "terms"))
-async def on_legal(msg: Message, command: CommandObject):
-    """Summarize the privacy policy or the terms, with a link to them.
+# ---------- /settings ----------
 
-    Telegram requires bots to have a privacy policy that users can
-    easily find.
+
+def settings_view(chat_id: int, user_id: int):
+    """Return the text and buttons of a chat's settings.
+
+    The language and the restart notices are botkit's; groups also
+    choose what happens to a message with a link (/cleanup).
     """
-    if msg.chat.type == ChatType.PRIVATE:
-        lang = lang_of(msg.from_user)
+    lang = lang_of(chat_id)
+    buttons = kit.settings_buttons(lang, chat_id)
+    if chat_id > 0:
+        text = t(lang, "settings.title", kit=kit.settings_lines(lang, chat_id))
     else:
-        lang = group_lang(msg.chat.id, msg.from_user)
-    privacy = command.command.lower() == "privacy"
-    url = PRIVACY_URL if privacy else TERMS_URL
-    name = "privacy_name" if privacy else "terms_name"
-    text = t(lang, "privacy_text" if privacy else "terms_text")
-    if url:
-        text += t(lang, "legal_read", url=html.escape(url), name=t(lang, name))
-    text += t(lang, "legal_contact", author=AUTHOR)
-    await msg.answer(
-        text,
-        disable_notification=is_silent(msg.chat),
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
-    )
-
-
-@router.message(Command("stop", "restart"), private)
-async def on_owner_command(msg: Message, dispatcher: Dispatcher):
-    """Stop or restart the bot on the owner's command.
-
-    "/stop quiet" and "/restart quiet" skip the messages in groups,
-    like the console commands. Everyone else gets the usual hint, as
-    if the command didn't exist.
-    """
-    user_id = msg.from_user.id if msg.from_user else 0
-    if not OWNER_ID or user_id != OWNER_ID:
-        if not OWNER_ID:
-            logging.info(
-                "/stop from %s ignored: set OWNER_ID=%s in .env if it's you",
-                user_id,
-                user_id,
-            )
-        await on_other(msg)
-        return
-    cmd = (msg.text or "").split()[0].lstrip("/").split("@")[0].lower()
-    quiet = "quiet" in (msg.text or "").lower().split()[1:]
-    lang = lang_of(msg.from_user)
-    text = t(lang, "owner_restart" if cmd == "restart" else "owner_stop")
-    if quiet:
-        text += t(lang, "owner_quiet")
-    await msg.answer(text)
-    request_stop(dispatcher, cmd, quiet)
-
-
-USERNAME_RE = re.compile(r"@?([A-Za-z][A-Za-z0-9_]{3,31})")
-
-
-def moved_keyboard(new_bot: str, lang: str) -> InlineKeyboardMarkup:
-    """Build the button that adds the new bot to a group as an admin.
-
-    The link opens the group picker and asks for the "Delete messages"
-    right right away, so /cleanup keeps working.
-    """
-    button = InlineKeyboardButton(
-        text=t(lang, "moved_button", bot=new_bot),
-        url=f"https://t.me/{new_bot}?startgroup=true&admin=delete_messages",
-    )
-    return InlineKeyboardMarkup(inline_keyboard=[[button]])
-
-
-@router.message(Command("migrate"), private)
-async def on_migrate(msg: Message, bot: Bot, dispatcher: Dispatcher):
-    """Move all groups to a new bot and leave them (owner only).
-
-    "/migrate @new_bot" only shows what will happen; "/migrate @new_bot
-    yes" does it: every group gets a message with a button that adds
-    the new bot, then this bot leaves. The profile says where the bot
-    moved, and the bot shuts down quietly. The group settings stay in
-    state.json for the new bot.
-    """
-    if not OWNER_ID or not msg.from_user or msg.from_user.id != OWNER_ID:
-        await on_other(msg)
-        return
-    lang = lang_of(msg.from_user)
-    args = (msg.text or "").split()[1:]
-    m = USERNAME_RE.fullmatch(args[0]) if args else None
-    me = await bot.me()
-    if not m or m.group(1).lower() == (me.username or "").lower():
-        await msg.answer(t(lang, "migrate_usage"))
-        return
-    new_bot = m.group(1)
-    groups = list(state["groups"].items())
-    if [a.lower() for a in args[1:]] != ["yes"]:
-        await msg.answer(
-            t(lang, "migrate_confirm", bot=new_bot, count=len(groups))
+        text = t(
+            lang,
+            "settings.group_title",
+            kit=kit.settings_lines(lang, chat_id),
+            cleanup=t(lang, f"cleanup_{cleanup_mode(chat_id)}"),
         )
-        return
-
-    await msg.answer(t(lang, "migrate_started", count=len(groups)))
-    left = 0
-    for chat_id, group_lang_code in groups:
-        code = state["chats"].get(chat_id, {}).get("lang") or group_lang_code
-        try:
-            await bot.send_message(
-                int(chat_id),
-                t(code, "moved_notice", bot=new_bot),
-                reply_markup=moved_keyboard(new_bot, code),
+        buttons.append(
+            InlineKeyboardButton(
+                text=t(lang, "btn.cleanup"), callback_data="cleanup:st"
             )
-        except Exception as e:
-            logging.warning("no move notice in %s: %s", chat_id, e)
-        try:
-            await bot.leave_chat(int(chat_id))
-            left += 1
-        except Exception as e:
-            logging.warning("couldn't leave %s: %s", chat_id, e)
-        state["groups"].pop(chat_id, None)
-        await asyncio.sleep(0.1)  # stay under Telegram's rate limits
-    state["moved"] = {"from": me.username, "to": new_bot}
-    state["restart_notices"] = {}
-    save_state()
-    await set_profile_status(bot, online=False)
-    await msg.answer(
-        t(lang, "migrate_done", bot=new_bot, left=left, count=len(groups))
-    )
-    request_stop(dispatcher, "stop", quiet=True)
+        )
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-ADMIN_COMMANDS = ("ban", "unban", "block", "unblock", "bans")
+kit.settings_view = settings_view
+
+
+@router.message(Command("settings"))
+async def on_settings(msg: Message):
+    """Show the settings of this chat; in a group only to admins."""
+    lang = lang_of(msg.chat.id, msg.from_user)
+    if not await kit.can_manage(msg):
+        await reply(msg, t(lang, "err.admins_only"), TTL_SHORT)
+        return
+    text, kb = settings_view(msg.chat.id, msg.from_user.id)
+    await reply(msg, text, TTL_MEDIUM, reply_markup=kb)
+
+
+# ---------- developers: moderation ----------
 
 
 def ban_target(args: list[str], replied: Message | None) -> int | None:
@@ -2086,7 +1423,7 @@ def ban_target(args: list[str], replied: Message | None) -> int | None:
     if args and args[0].lstrip("-").isdigit():
         return int(args.pop(0))
     if replied is not None:
-        return uploader_of(replied.message_id)
+        return db.uploader_of(replied.message_id)
     return None
 
 
@@ -2096,21 +1433,22 @@ async def notify(bot: Bot, user_id: int, key: str, **kwargs):
     The language is the user's /language choice, or the one seen when
     they last ran into the ban.
     """
+    row = db.chat(user_id)
     lang = (
-        state["users"].get(str(user_id), {}).get("lang")
+        (row["lang"] if row else None)
         or (ban_of(user_id) or {}).get("lang")
-        or DEFAULT_LANG
+        or lang_of(user_id)
     )
     try:
         await bot.send_message(user_id, t(lang, key, **kwargs))
     except Exception as e:
-        logging.info("couldn't notify %s: %s", user_id, e)
+        log.info("couldn't notify %s: %s", user_id, e)
 
 
 async def admin_command(
     bot: Bot, cmd: str, args: list[str], replied: Message | None
 ) -> str:
-    """Run an owner command and return the answer (English, HTML).
+    """Run a moderation command and return the answer (English, HTML).
 
     /ban <id|reply> [reason]: ban a user; a reason starting with
         "request" marks a ban the user asked for.
@@ -2128,11 +1466,11 @@ async def admin_command(
             if ban_of(user_id) is None:
                 return t("en", "admin_not_banned", id=user_id)
             await notify(bot, user_id, "unbanned")
-            unban_user(user_id)
+            db.unban(user_id)
             return t("en", "admin_unbanned", id=user_id)
         reason = " ".join(args)
         kind = "request" if reason.lower().startswith("request") else "abuse"
-        ban_user(user_id, reason, kind)
+        db.ban(user_id, reason, kind)
         if kind == "abuse":
             await notify(
                 bot,
@@ -2151,29 +1489,24 @@ async def admin_command(
             return t("en", "admin_which_post")
         key = await asyncio.to_thread(media_key, url)
         if cmd == "unblock":
-            if state["blocked"].pop(key, None) is None:
+            if not db.unblock(key):
                 return t("en", "admin_not_blocked", post=key)
-            save_state()
             return t("en", "admin_unblocked", post=key)
-        state["blocked"][key] = {
-            "reason": " ".join(args),
-            "at": int(time.time()),
-        }
-        save_state()
-        cache_drop(key)
+        db.block(key, " ".join(args))
+        db.media_drop(key)
         if replied is not None:
             with contextlib.suppress(Exception):
                 await replied.delete()
         return t("en", "admin_blocked", post=key)
     bans = [
-        f"<code>{uid}</code> {b['kind']}: "
+        f"<code>{b['user_id']}</code> {b['kind']}: "
         f"{html.escape(b.get('reason') or '-')}"
-        for uid, b in list(state["bans"].items())[-50:]
+        for b in db.bans()
     ]
     blocked = [
-        f"<code>{html.escape(key)}</code>: "
+        f"<code>{html.escape(b['key'])}</code>: "
         f"{html.escape(b.get('reason') or '-')}"
-        for key, b in list(state["blocked"].items())[-50:]
+        for b in db.blocked()
     ]
     return t(
         "en",
@@ -2185,10 +1518,10 @@ async def admin_command(
 
 @router.channel_post(F.chat.id == STORAGE_CHAT_ID, Command(*ADMIN_COMMANDS))
 async def on_storage_command(msg: Message, bot: Bot, command: CommandObject):
-    """Run an owner command posted in the storage channel.
+    """Run a moderation command posted in the storage channel.
 
     Only its admins can post there, so the post itself proves it's
-    the owner. Reply to a stored video to ban whoever requested it or
+    the author. Reply to a stored video to ban whoever requested it or
     to block the post. The command and the answer disappear after a
     minute, to keep the channel clean.
     """
@@ -2201,16 +1534,15 @@ async def on_storage_command(msg: Message, bot: Bot, command: CommandObject):
         text,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
-    for message_id in (msg.message_id, answer.message_id):
-        delete_later(bot, STORAGE_CHAT_ID, message_id, ADMIN_REPLY_TTL)
+    for message in (msg, answer):
+        kit.autodelete(message, TTL_MEDIUM, force=True)
 
 
-@router.message(Command(*ADMIN_COMMANDS), private)
-async def on_owner_admin(msg: Message, bot: Bot, command: CommandObject):
-    """Run an owner command sent in private chat."""
-    if not OWNER_ID or not msg.from_user or msg.from_user.id != OWNER_ID:
-        await on_other(msg)
-        return
+@router.message(
+    Command(*ADMIN_COMMANDS), private, F.from_user.func(kit.is_dev)
+)
+async def on_dev_admin(msg: Message, bot: Bot, command: CommandObject):
+    """Run a moderation command sent in private chat (developers)."""
     args = (command.args or "").split()
     await msg.answer(
         await admin_command(bot, command.command.lower(), args, None),
@@ -2219,7 +1551,7 @@ async def on_owner_admin(msg: Message, bot: Bot, command: CommandObject):
 
 
 def appeal_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Build the owner's buttons for an appeal."""
+    """Build the developer's buttons for an appeal."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -2239,28 +1571,27 @@ async def on_appeal(msg: Message, bot: Bot, command: CommandObject):
     """Let a banned user ask to be unbanned.
 
     A ban the user asked for is lifted right away. Other appeals go to
-    the owner (or the storage channel if OWNER_ID isn't set) with
+    the developers (or the storage channel if DEV_IDS isn't set) with
     buttons, at most one per APPEAL_COOLDOWN.
     """
-    lang = lang_of(msg.from_user)
+    lang = lang_of(msg.chat.id, msg.from_user)
     user = msg.from_user
     ban = ban_of(user)
     if ban is None:
         await msg.answer(t(lang, "appeal_not_banned"))
         return
     if ban.get("kind") == "request":
-        unban_user(user.id)
+        db.unban(user.id)
         await msg.answer(t(lang, "unbanned"))
         return
-    if time.time() - ban.get("appealed", 0) < APPEAL_COOLDOWN:
+    if time.time() - (ban.get("appealed") or 0) < APPEAL_COOLDOWN:
         await msg.answer(t(lang, "appeal_wait"))
         return
     if not command.args:
         await msg.answer(t(lang, "appeal_usage"))
         return
-    ban["appealed"] = int(time.time())
-    ban["lang"] = lang  # to answer in it later
-    save_state()
+    # The language is kept to answer in it later.
+    db.update_ban(user.id, appealed=int(time.time()), lang=lang)
     text = t(
         "en",
         "admin_appeal",
@@ -2269,21 +1600,23 @@ async def on_appeal(msg: Message, bot: Bot, command: CommandObject):
         reason=html.escape(ban.get("reason") or "-"),
         text=html.escape(command.args[:1000]),
     )
-    await bot.send_message(
-        OWNER_ID or STORAGE_CHAT_ID,
-        text,
-        reply_markup=appeal_keyboard(user.id),
-    )
+    for chat_id in cfg.dev_ids or (STORAGE_CHAT_ID,):
+        try:
+            await bot.send_message(
+                chat_id, text, reply_markup=appeal_keyboard(user.id)
+            )
+        except Exception as e:
+            log.warning("appeal not delivered to %s: %s", chat_id, e)
     await msg.answer(t(lang, "appeal_sent"))
 
 
 @router.callback_query(F.data.startswith("appeal:"))
 async def on_appeal_decided(c: CallbackQuery, bot: Bot):
-    """Unban or reject when the owner presses a button on an appeal."""
+    """Unban or reject when a developer answers an appeal."""
     in_storage = (
         isinstance(c.message, Message) and c.message.chat.id == STORAGE_CHAT_ID
     )
-    if c.from_user.id != OWNER_ID and not (not OWNER_ID and in_storage):
+    if not kit.is_dev(c.from_user) and not (not cfg.dev_ids and in_storage):
         await c.answer()
         return
     _, decision, raw_id = (c.data or "::").split(":", 2)
@@ -2293,7 +1626,7 @@ async def on_appeal_decided(c: CallbackQuery, bot: Bot):
     user_id = int(raw_id)
     if decision == "yes":
         await notify(bot, user_id, "unbanned")
-        unban_user(user_id)
+        db.unban(user_id)
         result = t("en", "admin_appeal_yes")
     else:
         await notify(bot, user_id, "appeal_rejected")
@@ -2306,31 +1639,12 @@ async def on_appeal_decided(c: CallbackQuery, bot: Bot):
 @router.message(private)
 async def on_other(msg: Message):
     """Hint that a link is expected in private chat."""
-    await msg.answer(t(lang_of(msg.from_user), "no_link"))
+    await msg.answer(t(lang_of(msg.chat.id, msg.from_user), "no_link"))
 
 
 # ---------- handlers: groups ----------
 
 group = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
-
-
-@router.message.outer_middleware()
-async def track_groups(
-    handler: Callable[[Message, dict], Awaitable[Any]],
-    msg: Message,
-    data: dict,
-) -> Any:
-    """Remember every group and user the bot sees messages from.
-
-    This also covers groups the bot joined before group tracking
-    existed. Users are remembered from private chats only: that's
-    where /broadcast can reach them.
-    """
-    if msg.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        remember_group(msg.chat.id, lang_of(msg.from_user))
-    elif msg.chat.type == ChatType.PRIVATE and msg.from_user:
-        remember_user(msg.from_user)
-    return await handler(msg, data)
 
 
 @router.message(
@@ -2350,15 +1664,15 @@ async def on_group_link(msg: Message, bot: Bot):
     url = find_link(msg.text)
     user_id = msg.from_user.id if msg.from_user else None
     if looks_like_announcement(msg, url):
-        logging.info("group %s: link in a long text, skipped", msg.chat.id)
+        log.info("group %s: link in a long text, skipped", msg.chat.id)
         return
     if ban_of(msg.from_user):
         # Silently: a ban is nobody else's business.
-        logging.info("group %s: link from banned %s", msg.chat.id, user_id)
+        log.info("group %s: link from banned %s", msg.chat.id, user_id)
         return
     mode = cleanup_mode(msg.chat.id)
-    lang = group_lang(msg.chat.id, msg.from_user)
-    logging.info(
+    lang = lang_of(msg.chat.id, msg.from_user)
+    log.info(
         "group %s: %s link from %s, cleanup=%s",
         msg.chat.id,
         platform_of(url),
@@ -2369,7 +1683,7 @@ async def on_group_link(msg: Message, bot: Bot):
     # a reply can't point to a message in another one.
     thread = msg.message_thread_id if msg.is_topic_message else None
     key = f"{thread or 0}:" + await asyncio.to_thread(media_key, url)
-    earlier = earlier_post(msg.chat.id, key)
+    earlier = db.earlier_post(msg.chat.id, key)
     if earlier and await point_to_earlier(bot, msg, earlier, mode, lang):
         return
     await react(bot, msg, REACTION_WORKING)
@@ -2391,14 +1705,13 @@ async def on_group_link(msg: Message, bot: Bot):
                 ),
             )
     except Exception as e:
-        logging.exception("download failed: %s", url)
+        log.exception("download failed: %s", url)
         # The original stays on failure, so the link isn't lost.
         await react(bot, msg, REACTION_FAILED)
-        error = await msg.reply(error_text(lang, e), disable_notification=True)
-        delete_later(bot, error.chat.id, error.message_id)
+        kit.autodelete(await msg.reply(error_text(lang, e)), TTL_SHORT)
         return
     if sent_id is not None:
-        remember_post(msg.chat.id, key, sent_id)
+        db.remember_post(msg.chat.id, key, sent_id)
     if mode == "keep":
         await react(bot, msg, None)
         return
@@ -2406,9 +1719,9 @@ async def on_group_link(msg: Message, bot: Bot):
     # "Delete messages" right this fails, and the message just stays.
     try:
         await msg.delete()
-        logging.info("deleted the link message in %s", msg.chat.id)
+        log.info("deleted the link message in %s", msg.chat.id)
     except Exception as e:
-        logging.warning("couldn't delete the link message: %s", e)
+        log.warning("couldn't delete the link message: %s", e)
         await react(bot, msg, None)
 
 
@@ -2434,156 +1747,17 @@ async def point_to_earlier(
             disable_notification=True,
         )
     except TelegramBadRequest as e:
-        logging.info("earlier post %s is gone: %s", earlier, e)
+        log.info("earlier post %s is gone: %s", earlier, e)
         return False
-    logging.info(
-        "group %s: repeated link, pointed to %s", msg.chat.id, earlier
-    )
+    log.info("group %s: repeated link, pointed to %s", msg.chat.id, earlier)
     # A repeat with a comment stays: the media isn't sent again, so the
     # words would have nowhere to go.
     if mode != "keep" and not link_comment(msg.text or "", url_of(msg)):
         try:
             await msg.delete()
         except Exception as e:
-            logging.warning("couldn't delete the repeated link: %s", e)
+            log.warning("couldn't delete the repeated link: %s", e)
     return True
-
-
-@router.message(F.migrate_to_chat_id, group)
-async def on_migrated(msg: Message):
-    """Move the settings when a group becomes a supergroup.
-
-    This message comes in the old group.
-    """
-    move_chat(msg.chat.id, msg.migrate_to_chat_id)
-
-
-@router.message(F.migrate_from_chat_id, group)
-async def on_migrated_from(msg: Message):
-    """Move the settings when a group becomes a supergroup.
-
-    This message comes in the new supergroup; whichever of the two
-    arrives first does the job.
-    """
-    move_chat(msg.migrate_from_chat_id, msg.chat.id)
-
-
-async def is_group_admin(bot: Bot, chat_id: int, user: User | None) -> bool:
-    """Check whether a user is an owner or admin of a group."""
-    if user is None:
-        return False
-    member = await bot.get_chat_member(chat_id, user.id)
-    return member.status in (
-        ChatMemberStatus.CREATOR,
-        ChatMemberStatus.ADMINISTRATOR,
-    )
-
-
-async def is_admin_message(bot: Bot, msg: Message) -> bool:
-    """Check whether a group message comes from an admin.
-
-    Anonymous admins post on behalf of the group itself.
-    """
-    if msg.sender_chat is not None and msg.sender_chat.id == msg.chat.id:
-        return True
-    return await is_group_admin(bot, msg.chat.id, msg.from_user)
-
-
-@router.message(Command("language"), group)
-async def on_group_language(msg: Message, bot: Bot):
-    """Show the group language picker to admins."""
-    lang = group_lang(msg.chat.id, msg.from_user)
-    if not await is_admin_message(bot, msg):
-        reply = await msg.reply(
-            t(lang, "admins_only"), disable_notification=True
-        )
-        delete_later(bot, reply.chat.id, reply.message_id)
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"glang:{code}")]
-            for code, name in LANG_NAMES.items()
-        ]
-    )
-    await msg.reply(
-        t(lang, "choose_group_lang"),
-        reply_markup=kb,
-        disable_notification=True,
-    )
-
-
-@router.callback_query(F.data.startswith("glang:"))
-async def on_group_language_chosen(c: CallbackQuery, bot: Bot):
-    """Save the group language if an admin pressed the button."""
-    code = (c.data or "").split(":", 1)[-1]
-    if code not in TEXTS or not isinstance(c.message, Message):
-        await c.answer()
-        return
-    chat_id = c.message.chat.id
-    # Anyone in the group can press the buttons, so check again.
-    if not await is_group_admin(bot, chat_id, c.from_user):
-        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
-        return
-    set_chat_setting(chat_id, "lang", code)
-    # Restart notices use the group language too.
-    state["groups"][str(chat_id)] = code
-    save_state()
-    await c.message.edit_text(t(code, "group_lang_set"))
-    await c.answer()
-
-
-@router.message(Command("notices"), group)
-async def on_group_notices(msg: Message, bot: Bot):
-    """Ask admins whether to post restart and shutdown notices."""
-    lang = group_lang(msg.chat.id, msg.from_user)
-    if not await is_admin_message(bot, msg):
-        reply = await msg.reply(
-            t(lang, "admins_only"), disable_notification=True
-        )
-        delete_later(bot, reply.chat.id, reply.message_id)
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=t(lang, "notices_on_button"),
-                    callback_data="gnotices:on",
-                ),
-                InlineKeyboardButton(
-                    text=t(lang, "notices_off_button"),
-                    callback_data="gnotices:off",
-                ),
-            ]
-        ]
-    )
-    if notices_enabled(msg.chat.id):
-        current = "notices_now_on"
-    else:
-        current = "notices_now_off"
-    await msg.reply(
-        t(lang, "choose_notices") + "\n" + t(lang, current),
-        reply_markup=kb,
-        disable_notification=True,
-    )
-
-
-@router.callback_query(F.data.startswith("gnotices:"))
-async def on_group_notices_chosen(c: CallbackQuery, bot: Bot):
-    """Save the notices setting if an admin pressed the button."""
-    choice = (c.data or "").split(":", 1)[-1]
-    if choice not in ("on", "off") or not isinstance(c.message, Message):
-        await c.answer()
-        return
-    chat_id = c.message.chat.id
-    # Anyone in the group can press the buttons, so check again.
-    if not await is_group_admin(bot, chat_id, c.from_user):
-        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
-        return
-    set_chat_setting(chat_id, "notices", choice == "on")
-    lang = group_lang(chat_id, c.from_user)
-    key = "notices_set_on" if choice == "on" else "notices_set_off"
-    await c.message.edit_text(t(lang, key))
-    await c.answer()
 
 
 async def can_delete_messages(bot: Bot, chat_id: int) -> bool:
@@ -2597,70 +1771,98 @@ async def can_delete_messages(bot: Bot, chat_id: int) -> bool:
     )
 
 
-@router.message(Command("cleanup"), group)
-async def on_group_cleanup(msg: Message, bot: Bot):
-    """Show admins the choice of what to do with link messages."""
-    lang = group_lang(msg.chat.id, msg.from_user)
-    if not await is_admin_message(bot, msg):
-        reply = await msg.reply(
-            t(lang, "admins_only"), disable_notification=True
-        )
-        delete_later(bot, reply.chat.id, reply.message_id)
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
+def cleanup_keyboard(lang: str, back: bool) -> InlineKeyboardMarkup:
+    """Return the /cleanup choices (and "Back" to /settings)."""
+    suffix = ":st" if back else ""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=t(lang, f"cleanup_{mode}"),
+                callback_data=f"cleanup:{mode}{suffix}",
+            )
+        ]
+        for mode in CLEANUP_MODES
+    ]
+    if back:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=t(lang, f"cleanup_{mode}"),
-                    callback_data=f"gcleanup:{mode}",
+                    text=t(lang, "btn.back"), callback_data="kit:back"
                 )
             ]
-            for mode in CLEANUP_MODES
-        ]
-    )
-    current = t(lang, f"cleanup_{cleanup_mode(msg.chat.id)}")
-    await msg.reply(
-        t(lang, "choose_cleanup")
-        + "\n"
-        + t(lang, "cleanup_now", mode=current),
-        reply_markup=kb,
-        disable_notification=True,
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cleanup_text(lang: str, chat_id: int) -> str:
+    """Return the /cleanup question with the current choice."""
+    current = t(lang, f"cleanup_{cleanup_mode(chat_id)}")
+    now = t(lang, "cleanup_now", mode=current)
+    return t(lang, "choose_cleanup") + "\n" + now
+
+
+@router.message(Command("cleanup"), group)
+async def on_group_cleanup(msg: Message):
+    """Show admins the choice of what to do with link messages."""
+    lang = lang_of(msg.chat.id, msg.from_user)
+    if not await kit.can_manage(msg):
+        await reply(msg, t(lang, "err.admins_only"), TTL_SHORT)
+        return
+    await reply(
+        msg,
+        cleanup_text(lang, msg.chat.id),
+        TTL_MEDIUM,
+        reply_markup=cleanup_keyboard(lang, back=False),
     )
 
 
-@router.callback_query(F.data.startswith("gcleanup:"))
+@router.callback_query(F.data.startswith("cleanup:"))
 async def on_group_cleanup_chosen(c: CallbackQuery, bot: Bot):
-    """Save the cleanup mode if an admin pressed the button."""
-    mode = (c.data or "").split(":", 1)[-1]
-    if mode not in CLEANUP_MODES or not isinstance(c.message, Message):
+    """Save the cleanup mode if an admin pressed the button.
+
+    "cleanup:st" opens the choice from /settings; "cleanup:<mode>:st"
+    goes back to /settings after saving.
+    """
+    _, mode, *rest = (c.data or "").split(":")
+    msg = c.message
+    if not isinstance(msg, Message) or is_private(msg):
         await c.answer()
         return
-    chat_id = c.message.chat.id
+    lang = lang_of(msg.chat.id, c.from_user)
     # Anyone in the group can press the buttons, so check again.
-    if not await is_group_admin(bot, chat_id, c.from_user):
-        await c.answer(t(lang_of(c.from_user), "admins_only"), show_alert=True)
+    if not await kit.can_manage(c):
+        await c.answer(t(lang, "err.admins_only"), show_alert=True)
         return
-    set_chat_setting(chat_id, "cleanup", mode)
-    lang = group_lang(chat_id, c.from_user)
+    if mode == "st":
+        await c.answer()
+        await edit(
+            msg,
+            cleanup_text(lang, msg.chat.id),
+            None,
+            reply_markup=cleanup_keyboard(lang, back=True),
+        )
+        return
+    if mode not in CLEANUP_MODES:
+        await c.answer()
+        return
+    db.set_setting(f"cleanup:{msg.chat.id}", mode)
     text = t(lang, "cleanup_set", mode=t(lang, f"cleanup_{mode}"))
-    if mode != "keep" and not await can_delete_messages(bot, chat_id):
+    if mode != "keep" and not await can_delete_messages(bot, msg.chat.id):
         text += t(lang, "cleanup_need_right")
-    await c.message.edit_text(text)
-    await c.answer()
+    if rest == ["st"]:
+        await c.answer(text.split("\n")[0])
+        view, kb = settings_view(msg.chat.id, c.from_user.id)
+        await edit(msg, view, None, reply_markup=kb)
+    else:
+        await c.answer()
+        await edit(msg, text, TTL_SHORT, reply_markup=None)
 
 
-@router.my_chat_member(
-    group,
-    ChatMemberUpdatedFilter(member_status_changed=JOIN_TRANSITION),
-)
-async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
-    """Say hi when added to a group.
+async def welcome(bot: Bot, event: ChatMemberUpdated, lang: str) -> str:
+    """Return the greeting for a group the bot was added to.
 
-    Also warn if the bot can't see regular messages there.
+    It also warns if the bot can't see regular messages there.
     """
-    # The group language, or that of the person who added the bot.
-    lang = group_lang(event.chat.id, event.from_user)
-    remember_group(event.chat.id, lang)
     # Fresh data, not bot.me(): privacy mode may have been changed
     # while the bot was running.
     me = await bot.get_me()
@@ -2668,22 +1870,14 @@ async def on_added_to_group(event: ChatMemberUpdated, bot: Bot):
     text = t(lang, "group_hello") + t(lang, "group_lang_hint")
     if not me.can_read_all_group_messages and not is_admin:
         text += t(lang, "group_need_access")
-    text += legal_links(lang)
-    await bot.send_message(
-        event.chat.id,
-        text,
-        disable_notification=True,
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
-    )
+    return text
 
 
-@router.my_chat_member(
-    group,
-    ChatMemberUpdatedFilter(member_status_changed=LEAVE_TRANSITION),
-)
-async def on_removed_from_group(event: ChatMemberUpdated):
-    """Stop sending restart notices to a group the bot has left."""
-    forget_group(event.chat.id)
+kit.welcome = welcome
+kit.on_chat_moved = db.move_recent
+# Banned users get no broadcasts, and their private chats aren't kept.
+kit.broadcast_skip = lambda chat_id: db.ban_of(chat_id) is not None
+kit.keep_user = lambda user_id: db.ban_of(user_id) is None
 
 
 # ---------- handlers: inline mode ----------
@@ -2696,15 +1890,15 @@ async def on_inline(q: InlineQuery):
     A cached video is sent right away; otherwise a placeholder is
     returned and replaced once the user sends it.
     """
-    lang = lang_of(q.from_user)
+    lang = lang_of(None, q.from_user)
     url = find_link(q.query)
     if not url or ban_of(q.from_user):
         await q.answer([], cache_time=1, is_personal=True)
         return
 
     key = await asyncio.to_thread(media_key, url)
-    file_id = cache_get("videos", key)
-    if file_id and key not in state["blocked"]:
+    file_id = db.media_get("videos", key)
+    if file_id and not db.is_blocked(key):
         cached = InlineQueryResultCachedVideo(
             id="c" + result_id(url),
             video_file_id=file_id,
@@ -2743,7 +1937,7 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
     url = find_link(r.query)
     if not url:
         return
-    lang = lang_of(r.from_user)
+    lang = lang_of(None, r.from_user)
     if ban := ban_of(r.from_user):
         await bot.edit_message_text(
             inline_message_id=r.inline_message_id, text=ban_text(lang, ban)
@@ -2766,7 +1960,7 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
             media=InputMediaVideo(media=file_id, supports_streaming=True),
         )
     except Exception as e:
-        logging.exception("download failed: %s", url)
+        log.exception("download failed: %s", url)
         await bot.edit_message_text(
             inline_message_id=r.inline_message_id, text=error_text(lang, e)
         )
@@ -2775,357 +1969,27 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
 @router.callback_query(F.data == "noop")
 async def on_placeholder_tap(c: CallbackQuery):
     """Handle taps on the placeholder button."""
-    await c.answer(t(lang_of(c.from_user), "hang_on"))
+    await c.answer(t(lang_of(None, c.from_user), "hang_on"))
 
 
-# ---------- startup and shutdown ----------
+# ---------- startup ----------
 
 
-async def post_restart_notices(bot: Bot, key: str = "restarting"):
-    """Tell every group that the bot is restarting or shutting down.
-
-    `key` is the text to post: "restarting" or "shutting_down". The
-    message ids are saved so the next run can delete them.
-    """
-    for chat_id, lang in list(state["groups"].items()):
-        if not notices_enabled(chat_id):
-            continue
-        try:
-            msg = await bot.send_message(
-                int(chat_id), t(lang, key), disable_notification=True
-            )
-            state["restart_notices"][chat_id] = msg.message_id
-        except TelegramMigrateToChat as e:
-            # The group became a supergroup while the bot wasn't
-            # looking; the notice goes there next time.
-            move_chat(chat_id, e.migrate_to_chat_id)
-        except TelegramForbiddenError as e:
-            # Kicked or the group is deleted: no point in trying again.
-            logging.warning("dropping group %s: %s", chat_id, e)
-            state["groups"].pop(chat_id, None)
-        except TelegramBadRequest as e:
-            # E.g. the "General" topic is closed, or the bot can't
-            # write right now; the group may still use the bot.
-            if "chat not found" in str(e).lower():
-                logging.warning("dropping group %s: %s", chat_id, e)
-                state["groups"].pop(chat_id, None)
-            else:
-                logging.warning("no notice in %s: %s", chat_id, e)
-        except Exception:
-            logging.exception("couldn't post restart notice to %s", chat_id)
-        # Stay well under Telegram's rate limits.
-        await asyncio.sleep(0.05)
-    save_state()
-
-
-async def delete_restart_notices(bot: Bot):
-    """Delete the restart/shutdown messages left by the previous run."""
-    for chat_id, message_id in list(state["restart_notices"].items()):
-        try:
-            await bot.delete_message(int(chat_id), message_id)
-        except Exception as e:
-            logging.warning(
-                "couldn't delete restart notice in %s: %s", chat_id, e
-            )
-    state["restart_notices"] = {}
-    save_state()
-
-
-async def setup_bot_profile(bot: Bot):
-    """Set the command menu in every language.
-
-    Telegram shows the version matching the user's app language. The
-    default language is registered without language_code, as a
-    fallback for everyone else.
-    """
-    for code in TEXTS:
-        lang_code = None if code == DEFAULT_LANG else code
-        commands = [
-            BotCommand(command="start", description=t(code, "cmd_start")),
-            BotCommand(command="help", description=t(code, "cmd_help")),
-            BotCommand(
-                command="language", description=t(code, "cmd_language")
-            ),
-            BotCommand(command="privacy", description=t(code, "cmd_privacy")),
-        ]
-        await bot.set_my_commands(commands, language_code=lang_code)
-        if OWNER_ID:
-            # Only the owner sees /broadcast in the menu.
-            owner_commands = [
-                *commands,
-                BotCommand(
-                    command="broadcast",
-                    description=t(code, "cmd_broadcast"),
-                ),
-            ]
-            # Fails if the owner never opened a chat with the bot.
-            try:
-                await bot.set_my_commands(
-                    owner_commands,
-                    scope=BotCommandScopeChat(chat_id=OWNER_ID),
-                    language_code=lang_code,
-                )
-            except TelegramBadRequest as e:
-                logging.warning("no owner command menu: %s", e)
-        # In groups only the admin settings make sense.
-        await bot.set_my_commands(
-            [
-                BotCommand(
-                    command="language",
-                    description=t(code, "cmd_group_language"),
-                ),
-                BotCommand(
-                    command="notices",
-                    description=t(code, "cmd_group_notices"),
-                ),
-                BotCommand(
-                    command="cleanup",
-                    description=t(code, "cmd_group_cleanup"),
-                ),
-                BotCommand(command="help", description=t(code, "cmd_help")),
-                BotCommand(
-                    command="privacy", description=t(code, "cmd_privacy")
-                ),
-            ],
-            scope=BotCommandScopeAllGroupChats(),
-            language_code=lang_code,
-        )
-
-
-def fit(text: str, limit: int) -> str:
-    """Cut a text to a Telegram length limit, adding "..." if needed.
-
-    Telegram counts UTF-16 code units, so an emoji takes two.
-    """
-
-    def size(s: str) -> int:
-        """Return the length of a text in UTF-16 code units."""
-        return len(s.encode("utf-16-le")) // 2
-
-    if size(text) <= limit:
-        return text
-    while text and size(text + "…") > limit:
-        text = text[:-1]
-    return text.rstrip() + "…" if limit > 0 else ""
-
-
-async def set_profile_status(bot: Bot, online: bool):
-    """Show whether the bot is running in its profile texts.
-
-    The status goes in front of the short description (bot profile,
-    share links) and the description (empty chat before Start). A hard
-    crash skips the update, so the profile may still say "online".
-    Errors are only logged: a failed update must never stop the bot.
-    """
-    status_key = "status_online" if online else "status_offline"
-    try:
-        me = await bot.me()
-        moved = state["moved"]
-        if moved and moved.get("from") == me.username:
-            await show_moved_profile(bot, moved["to"])
-            return
-        for code in TEXTS:
-            lang_code = None if code == DEFAULT_LANG else code
-            status = t(code, status_key)
-            description = t(
-                code, "bot_description", bot=me.username
-            ) + credits(code)
-            # The privacy link must stay even if the text is cut.
-            privacy = f"\n🔒 Privacy: {PRIVACY_URL}" if PRIVACY_URL else ""
-            if len(privacy) > 200:  # a link that long would crowd out the text
-                privacy = ""
-            await bot.set_my_description(
-                fit(
-                    status + "\n\n" + description,
-                    512 - len(privacy.encode("utf-16-le")) // 2,
-                )
-                + privacy,
-                language_code=lang_code,
-            )
-            short = t(code, "bot_short_description")
-            author = t(code, "author_short", author=AUTHOR)
-            await bot.set_my_short_description(
-                fit(f"{status} · {short} · {author}", 120),
-                language_code=lang_code,
-            )
-    except Exception:
-        logging.exception("couldn't update the profile status")
-
-
-async def show_moved_profile(bot: Bot, new_bot: str):
-    """Point everyone who opens the old bot's profile to the new one."""
-    for code in TEXTS:
-        lang_code = None if code == DEFAULT_LANG else code
-        text = t(code, "moved_profile", bot=new_bot)
-        await bot.set_my_description(fit(text, 512), language_code=lang_code)
-        await bot.set_my_short_description(
-            fit(text, 120), language_code=lang_code
-        )
-
-
-async def on_startup(bot: Bot):
-    """Clean up after the previous run and show the bot as online.
-
-    After /migrate, the state belongs to the new bot: the "moved" mark
-    is dropped, and the old bot's notices can't be deleted anyway.
-    """
-    me = await bot.me()
-    if state["moved"] and state["moved"].get("from") != me.username:
-        logging.info("moved from @%s, starting fresh", state["moved"]["from"])
-        state["moved"] = {}
-        save_state()
-    await delete_restart_notices(bot)
-    await set_profile_status(bot, online=True)
-
-
-async def on_shutdown(bot: Bot):
-    """Warn the groups; on a real shutdown also show the bot offline.
-
-    A restart takes only a few seconds, so the profile status is left
-    as it is instead of flickering to offline and back.
-    """
-    if not quiet_stop:
-        key = "restarting" if stop_mode == "restart" else "shutting_down"
-        await post_restart_notices(bot, key)
-    if stop_mode != "restart":
-        await set_profile_status(bot, online=False)
-
-
-def request_stop(dp: Dispatcher, cmd: str, quiet: bool):
-    """Stop polling for "stop" or "restart", from the console or chat.
-
-    Must be called in the event loop. Polling is stopped in a separate
-    task, so a handler that asks for it can finish first.
-    """
-    global stop_mode, quiet_stop
-    stop_mode = "restart" if cmd == "restart" else "shutdown"
-    quiet_stop = quiet
-    logging.info(
-        "%s%s...",
-        "restarting" if cmd == "restart" else "stopping",
-        " quietly" if quiet else "",
-    )
-    task = asyncio.get_running_loop().create_task(dp.stop_polling())
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
-
-
-def start_console(dp: Dispatcher, loop: asyncio.AbstractEventLoop):
-    """Read commands from the terminal in a background thread.
-
-    "stop" shuts the bot down for a while, "restart" restarts it with
-    the latest code. A daemon thread is used so that a blocked input()
-    never keeps the process alive after Ctrl+C.
-    """
-
-    def worker():
-        """Wait for commands until "stop", "restart" or end of input.
-
-        Adding "quiet" ("stop quiet", "restart quiet") skips the
-        messages in groups.
-        """
-        while True:
-            try:
-                words = input().strip().lower().split()
-            except (EOFError, KeyboardInterrupt):
-                # No interactive terminal (e.g. running as a service).
-                return
-            if not words:
-                continue
-            cmd, flags = words[0], set(words[1:])
-            if cmd in ("stop", "exit", "quit", "restart") and flags <= {
-                "quiet"
-            }:
-                loop.call_soon_threadsafe(
-                    request_stop, dp, cmd, "quiet" in flags
-                )
-                return
-            print(
-                "Unknown command. Available: stop, restart "
-                "(add 'quiet' to skip group messages)"
-            )
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def keep_awake(on: bool = True):
-    """Stop Windows from sleeping while the bot runs.
-
-    The screen may still turn off. Windows also clears this by itself
-    when the process exits, even after a crash. Does nothing on other
-    systems.
-    """
-    if sys.platform != "win32":
-        return
-    import ctypes
-
-    es_continuous = 0x80000000
-    es_system_required = 0x00000001
-    flags = es_continuous | (es_system_required if on else 0)
-    if not ctypes.windll.kernel32.SetThreadExecutionState(flags):
-        logging.warning("couldn't keep the computer awake")
-
-
-async def main():
-    """Start the bot and run it until it is stopped."""
-    bot = Bot(
-        BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    dp = Dispatcher()
-    dp.include_router(router)
-    load_state()
-    load_media_cache()
-    logging.info(
+async def main() -> int:
+    """Start the bot and run it until /stop or /reload."""
+    db.import_json()
+    log.info(
         "data folder: %s (cookies: %s)",
-        os.getcwd(),
-        ", ".join(sorted(os.listdir(COOKIES_DIR)))
-        if os.path.isdir(COOKIES_DIR)
+        BASE,
+        ", ".join(sorted(p.name for p in COOKIES_DIR.iterdir()))
+        if COOKIES_DIR.is_dir()
         else "none",
     )
-    keep_awake()
-    dp.startup.register(on_startup)
-    # Runs on "stop", Ctrl+C and normal exit, but not on a hard crash.
-    dp.shutdown.register(on_shutdown)
-    print("Bot is running. Type 'stop' to shut it down, 'restart' to restart.")
-    start_console(dp, asyncio.get_running_loop())
-    try:
-        await setup_bot_profile(bot)
-        await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
-    finally:
-        keep_awake(False)
-        await bot.session.close()
-        logging.info("bot stopped")
-
-
-def supervise() -> int:
-    """Run the bot in a child process and restart it when asked.
-
-    The child exits with RESTART_EXIT_CODE after "restart", and a new
-    child is started, so code changes are picked up. The child shares
-    this terminal, so console commands keep working. Ctrl+C reaches
-    both processes: the child shuts down gracefully, and the
-    supervisor just waits for it.
-    """
-    env = {**os.environ, CHILD_ENV: "1"}
-    while True:
-        child = subprocess.Popen([sys.executable, *sys.argv], env=env)
-        while True:
-            try:
-                code = child.wait()
-                break
-            except KeyboardInterrupt:
-                continue  # the child handles Ctrl+C itself
-        if code != RESTART_EXIT_CODE:
-            return code
-        print("Restarting the bot...")
+    bot = Bot(
+        cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    return await kit.serve(bot, Dispatcher(), router)
 
 
 if __name__ == "__main__":
-    # state.json, media_cache.json and cookies/ live next to bot.py,
-    # wherever the bot is started from (a service manager may start it
-    # in "/").
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    if os.environ.get(CHILD_ENV):
-        asyncio.run(main())
-        sys.exit(RESTART_EXIT_CODE if stop_mode == "restart" else 0)
-    sys.exit(supervise())
+    run(main)
