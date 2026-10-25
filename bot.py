@@ -46,7 +46,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 import httpx
 import yt_dlp
@@ -133,6 +135,18 @@ REACTION_FAILED = "🤷"
 CLEANUP_MODES = ("keep", "link_user", "user", "none")
 SLOW_AFTER = 20  # seconds before "taking longer than usual"
 DOWNLOAD_TIMEOUT = 120  # seconds before a download is given up
+# Downloads that run at the same time; the rest wait in line. They get
+# their own threads, so a queue of downloads never holds up looking up
+# a link that is already cached.
+DOWNLOAD_WORKERS = 4
+# Links one user can have downloading at the same time.
+USER_PARALLEL = 2
+# Sizes of the in-memory caches; the oldest entries are dropped.
+RESOLVED_LIMIT = 2000
+INSTAGRAM_LIMIT = 200
+# Temporary folders of downloads start with this, so the ones left
+# after a crash can be cleaned up at the next start.
+TMP_PREFIX = "pastemedia-"
 # Seconds to upload a file to Telegram. aiogram's default of 60 is too
 # short for a 1080p video of tens of megabytes on a home connection.
 UPLOAD_TIMEOUT = 300
@@ -205,15 +219,33 @@ edit = kit.edit
 instagram_posts: dict[str, list[dict]] = {}
 # short url -> full url after redirects (in memory)
 resolved: dict[str, str] = {}
-# Prevents downloading the same link twice in parallel.
-locks: dict[str, asyncio.Lock] = {}
+# Prevents downloading the same link twice in parallel: key -> [lock,
+# number of users]. A lock is forgotten once nobody uses it.
+locks: dict[str, list] = {}
 # Re-encoding takes all CPU cores, so only one runs at a time; the
 # others wait in line.
 compress_slot = asyncio.Semaphore(1)
+# Threads for downloads and for re-encoding. Lookups (following a
+# short link) use asyncio's own threads, so they never wait for these.
+download_pool = ThreadPoolExecutor(DOWNLOAD_WORKERS, "download")
+compress_pool = ThreadPoolExecutor(1, "compress")
+# A slot is taken before a download starts and given back only when its
+# thread really ends, even if the user got "timed out" long before.
+download_slots = asyncio.Semaphore(DOWNLOAD_WORKERS)
+# user id -> links of theirs being downloaded right now.
+user_jobs: dict[int, int] = {}
 
 
 class TooBigError(RuntimeError):
     """The file exceeds the Bot API upload limit."""
+
+
+class BusyError(RuntimeError):
+    """The user already has USER_PARALLEL downloads running."""
+
+
+class OffsiteError(RuntimeError):
+    """A short link leads somewhere other than the platform itself."""
 
 
 class BlockedError(RuntimeError):
@@ -247,6 +279,10 @@ def error_text(lang: str, e: Exception) -> str:
         return t(lang, "blocked_content")
     if isinstance(e, TooBigError):
         return t(lang, "too_big")
+    if isinstance(e, BusyError):
+        return t(lang, "busy")
+    if isinstance(e, OffsiteError):
+        return t(lang, "failed")
     # A network error while uploading is almost always a timeout.
     if isinstance(e, (DownloadTimeoutError, TelegramNetworkError)):
         return t(lang, "timeout")
@@ -284,18 +320,128 @@ async def slow_notice(action: Callable[[], Awaitable[Any]]):
         task.cancel()
 
 
-async def run_with_timeout(func: Callable, *args: Any) -> Any:
-    """Run a blocking function in a thread, with DOWNLOAD_TIMEOUT.
+class Scratch:
+    """A temporary folder that is deleted when nobody uses it any more.
 
-    Python can't stop a running thread, so on timeout the work keeps
-    going in the background, but the caller gets an answer right away.
+    A download that timed out keeps running in its thread (Python can't
+    stop a thread) and would recreate a folder deleted under it, leaving
+    files of up to MAX_SOURCE_BYTES behind. So the folder has users: the
+    code that sends the result, and every thread still writing to it.
     """
+
+    def __init__(self):
+        """Create the folder; its creator is the first user."""
+        self.path = tempfile.mkdtemp(prefix=TMP_PREFIX)
+        self._users = 1
+
+    def hold(self) -> Callable[[], None]:
+        """Add a user; return the function that removes it."""
+        self._users += 1
+        return self.release
+
+    def release(self) -> None:
+        """Remove a user; delete the folder after the last one."""
+        self._users -= 1
+        if self._users == 0:
+            shutil.rmtree(self.path, ignore_errors=True)
+
+
+def clean_old_scratch() -> None:
+    """Delete temporary folders left after a crash or a power cut."""
+    base = tempfile.gettempdir()
+    for name in os.listdir(base):
+        if name.startswith(TMP_PREFIX):
+            shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+
+
+async def in_thread(
+    pool: ThreadPoolExecutor,
+    timeout: float,
+    func: Callable,
+    *args: Any,
+    scratch: Scratch | None = None,
+    slots: asyncio.Semaphore | None = None,
+) -> Any:
+    """Run a blocking function in one of the pool's threads.
+
+    On timeout the caller gets DownloadTimeoutError right away, but the
+    thread keeps going: its slot and its scratch folder are given back
+    only when it really ends, so finished-looking work never piles up
+    unseen.
+    """
+    if slots is not None:
+        await slots.acquire()
+    done = scratch.hold() if scratch is not None else None
+    future = asyncio.wrap_future(pool.submit(func, *args))
+
+    def finished(f: asyncio.Future) -> None:
+        if slots is not None:
+            slots.release()
+        if done is not None:
+            done()
+        if not f.cancelled():
+            f.exception()  # retrieved, so asyncio doesn't warn about it
+
+    future.add_done_callback(finished)
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(func, *args), DOWNLOAD_TIMEOUT
-        )
+        return await asyncio.wait_for(asyncio.shield(future), timeout)
     except asyncio.TimeoutError as e:
         raise DownloadTimeoutError(f"{func.__name__} timed out") from e
+
+
+async def run_with_timeout(func: Callable, *args: Any, scratch=None) -> Any:
+    """Download in a download thread, with DOWNLOAD_TIMEOUT.
+
+    The time counts from the start of the download, not from the end
+    of the line before it.
+    """
+    return await in_thread(
+        download_pool,
+        DOWNLOAD_TIMEOUT,
+        func,
+        *args,
+        scratch=scratch,
+        slots=download_slots,
+    )
+
+
+@contextlib.contextmanager
+def user_slot(user_id: int | None):
+    """Count a download of a user; refuse a third one at a time."""
+    if user_id is None:
+        yield
+        return
+    if user_jobs.get(user_id, 0) >= USER_PARALLEL:
+        raise BusyError(user_id)
+    user_jobs[user_id] = user_jobs.get(user_id, 0) + 1
+    try:
+        yield
+    finally:
+        user_jobs[user_id] -= 1
+        if not user_jobs[user_id]:
+            del user_jobs[user_id]
+
+
+@contextlib.asynccontextmanager
+async def key_lock(key: str):
+    """Let only one task at a time download the same post."""
+    entry = locks.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            locks.pop(key, None)
+
+
+def remember(cache: dict, key: str, value: Any, limit: int) -> None:
+    """Put a value into a cache; drop the oldest entries over limit."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > limit:
+        cache.pop(next(iter(cache)))
 
 
 def platform_of(url: str) -> str:
@@ -373,11 +519,34 @@ def _http() -> httpx.Client:
     )
 
 
+def is_tiktok_host(url: str) -> bool:
+    """Tell whether a URL is on tiktok.com itself (or a subdomain)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return parts.scheme in ("http", "https") and (
+        host == "tiktok.com" or host.endswith(".tiktok.com")
+    )
+
+
 def resolve_url(url: str) -> str:
-    """Follow short links (vm.tiktok.com, tt.site) to the post URL."""
+    """Follow short links (vm.tiktok.com, tt.site) to the post URL.
+
+    The link must end up on tiktok.com. Otherwise whatever site it
+    leads to would be downloaded and cached as that TikTok post, for
+    everyone who sends the real one later.
+    """
     if url not in resolved:
         with _http() as c:
-            resolved[url] = str(c.get(url).url)
+            full = str(c.get(url).url)
+        if not is_tiktok_host(full):
+            raise OffsiteError(f"{url} leads to {urlsplit(full).hostname}")
+        if not re.search(r"/(?:video|photo)/\d+", full):
+            # A login or captcha page: don't keep it, try again later.
+            return full
+        remember(resolved, url, full, RESOLVED_LIMIT)
     return resolved[url]
 
 
@@ -411,13 +580,47 @@ def media_key(url: str) -> str:
     """
     platform = platform_of(url)
     full = url
-    if platform == "tiktok":
+    if platform == "tiktok" and not is_full_tiktok(url):
+        # A link off TikTok gets no post key: the download refuses it.
         with contextlib.suppress(Exception):
             full = resolve_url(url)
-    m = re.search(r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", full)
+    # Only the path counts: "?x=/video/<id>" must not pick the key.
+    m = re.search(
+        r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", urlsplit(full).path
+    )
     if m:
         return f"{platform}:{m.group(1)}"
     return full.split("?")[0].rstrip("/")
+
+
+def is_full_tiktok(url: str) -> bool:
+    """Tell whether a link already is a post on tiktok.com itself.
+
+    Such a link needs no network to get its key. Short links do: where
+    they lead is only known after following them.
+    """
+    parts = urlsplit(url)
+    return (parts.hostname or "").lower() in (
+        "tiktok.com",
+        "www.tiktok.com",
+        "m.tiktok.com",
+    ) and bool(re.fullmatch(r"/@[\w.-]+/(?:video|photo)/\d+/?", parts.path))
+
+
+async def offload(func: Callable[[str], Any], url: str) -> Any:
+    """Run media_key or is_album without blocking the bot.
+
+    Only an unresolved TikTok short link needs the network; everything
+    else is answered right here. The network case runs in asyncio's
+    own threads, which downloads never use.
+    """
+    if (
+        platform_of(url) != "tiktok"
+        or url in resolved
+        or (func is media_key and is_full_tiktok(url))
+    ):
+        return func(url)
+    return await asyncio.to_thread(func, url)
 
 
 def _page_json(html: str) -> list[dict]:
@@ -695,8 +898,9 @@ def instagram_files(url: str) -> list[dict]:
         raise RuntimeError(
             f"gallery-dl failed: {result.stderr.strip()[-300:]}"
         ) from e
-    instagram_posts[url] = parse_gallery_dl(data)
-    return instagram_posts[url]
+    files = parse_gallery_dl(data)
+    remember(instagram_posts, url, files, INSTAGRAM_LIMIT)
+    return files
 
 
 def fetch_file(c: httpx.Client, url: str, path: str, limit: int = MAX_BYTES):
@@ -826,6 +1030,9 @@ def generic_opts(outdir: str, platform: str) -> dict:
         # yt-dlp skips files that are known to be too big even to
         # compress.
         "max_filesize": MAX_SOURCE_BYTES,
+        # Never the "generic" extractor, which downloads from any site:
+        # only YouTube and Instagram links get here.
+        "allowed_extractors": ["default", "-generic"],
     }
     cookiefile = cookies_for(platform)
     if cookiefile:
@@ -864,6 +1071,8 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
         "no_warnings": True,
         "noprogress": True,
         "socket_timeout": 30,
+        # Never the "generic" extractor, which downloads from any site.
+        "allowed_extractors": ["default", "-generic"],
     }
     # Needed for posts TikTok shows only to logged-in adults.
     cookiefile = cookies_for("tiktok")
@@ -973,20 +1182,30 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
     channel first, noting who requested it. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
-    key = await asyncio.to_thread(media_key, url)
+    key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
     if cached := db.media_get("videos", key):
         return cached
-    lock = locks.setdefault(key, asyncio.Lock())
-    async with lock:
+    # Only real downloads count towards the user's limit.
+    with user_slot(user_id):
+        return await _download_video(bot, url, key, user_id)
+
+
+async def _download_video(
+    bot: Bot, url: str, key: str, user_id: int | None
+) -> str:
+    """Download a video, upload it to the storage, cache its file_id."""
+    async with key_lock(key):
         if cached := db.media_get("videos", key):
             return cached
-        # A timed-out download may still hold its files open.
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            path, info = await run_with_timeout(download, url, tmp)
+        scratch = Scratch()
+        try:
+            path, info = await run_with_timeout(
+                download, url, scratch.path, scratch=scratch
+            )
             if os.path.getsize(path) > MAX_BYTES:
-                path, info = await compress(path, tmp)
+                path, info = await compress(path, scratch)
             msg = await bot.send_video(
                 STORAGE_CHAT_ID,
                 FSInputFile(path),
@@ -1000,6 +1219,8 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
                 disable_notification=True,
                 request_timeout=UPLOAD_TIMEOUT,
             )
+        finally:
+            scratch.release()
         if msg.video is None:
             raise RuntimeError("Telegram didn't return the uploaded video")
         db.remember_upload([msg.message_id], user_id)
@@ -1007,20 +1228,24 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
         return msg.video.file_id
 
 
-async def compress(path: str, outdir: str) -> tuple[str, dict]:
+async def compress(path: str, scratch: Scratch) -> tuple[str, dict]:
     """Compress a too big video, one at a time.
 
-    Each ffmpeg run has its own timeout; this one also covers waiting
-    in line and a second try.
+    Each ffmpeg run has its own timeout; this one also covers a second
+    try (waiting in line doesn't count).
     """
     log.info("%s is %.0f MB, compressing", path, os.path.getsize(path) / 2**20)
     try:
         async with compress_slot:
-            return await asyncio.wait_for(
-                asyncio.to_thread(compress_video, path, outdir),
+            return await in_thread(
+                compress_pool,
                 COMPRESS_TIMEOUT * 2 + 30,
+                compress_video,
+                path,
+                scratch.path,
+                scratch=scratch,
             )
-    except (asyncio.TimeoutError, subprocess.TimeoutExpired) as e:
+    except subprocess.TimeoutExpired as e:
         raise DownloadTimeoutError("compression timed out") from e
 
 
@@ -1122,24 +1347,36 @@ async def get_album_items(
     channel first, noting who requested them. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
-    key = await asyncio.to_thread(media_key, url)
+    key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
     if cached := db.media_get("albums", key):
         return [tuple(item) for item in cached]
-    lock = locks.setdefault("album:" + key, asyncio.Lock())
-    async with lock:
+    with user_slot(user_id):
+        return await _download_album(bot, url, key, user_id)
+
+
+async def _download_album(
+    bot: Bot, url: str, key: str, user_id: int | None
+) -> list[tuple[str, str]]:
+    """Download an album, upload it to the storage, cache it."""
+    async with key_lock("album:" + key):
         if cached := db.media_get("albums", key):
             return [tuple(item) for item in cached]
         items = []
         message_ids = []
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            files = await run_with_timeout(download_album, url, tmp)
+        scratch = Scratch()
+        try:
+            files = await run_with_timeout(
+                download_album, url, scratch.path, scratch=scratch
+            )
             for part in chunks(files):
                 for msg in await upload_album_part(bot, part, url):
                     message_ids.append(msg.message_id)
                     if item := sent_item(msg):
                         items.append(item)
+        finally:
+            scratch.release()
         db.remember_upload(message_ids, user_id)
         if not items:
             raise RuntimeError("Telegram didn't return the uploaded files")
@@ -1247,7 +1484,7 @@ async def reply_with_media(
             message_id=msg.message_id
         )
     user_id = msg.from_user.id if msg.from_user else None
-    if await asyncio.to_thread(is_album, url):
+    if await offload(is_album, url):
         items = await get_album_items(bot, url, user_id)
     else:
         items = [("video", await get_file_id(bot, url, user_id))]
@@ -1487,7 +1724,7 @@ async def admin_command(
             url = find_link(replied.caption)
         if not url:
             return t("en", "admin_which_post")
-        key = await asyncio.to_thread(media_key, url)
+        key = await offload(media_key, url)
         if cmd == "unblock":
             if not db.unblock(key):
                 return t("en", "admin_not_blocked", post=key)
@@ -1682,7 +1919,7 @@ async def on_group_link(msg: Message, bot: Bot):
     # In groups with topics, repeats are looked for in the same topic:
     # a reply can't point to a message in another one.
     thread = msg.message_thread_id if msg.is_topic_message else None
-    key = f"{thread or 0}:" + await asyncio.to_thread(media_key, url)
+    key = f"{thread or 0}:" + await offload(media_key, url)
     earlier = db.earlier_post(msg.chat.id, key)
     if earlier and await point_to_earlier(bot, msg, earlier, mode, lang):
         return
@@ -1896,7 +2133,7 @@ async def on_inline(q: InlineQuery):
         await q.answer([], cache_time=1, is_personal=True)
         return
 
-    key = await asyncio.to_thread(media_key, url)
+    key = await offload(media_key, url)
     file_id = db.media_get("videos", key)
     if file_id and not db.is_blocked(key):
         cached = InlineQueryResultCachedVideo(
@@ -1977,6 +2214,7 @@ async def on_placeholder_tap(c: CallbackQuery):
 
 async def main() -> int:
     """Start the bot and run it until /stop or /reload."""
+    clean_old_scratch()
     db.import_json()
     log.info(
         "data folder: %s (cookies: %s)",

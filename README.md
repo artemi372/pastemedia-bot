@@ -122,7 +122,7 @@ cookies/youtube.txt
 cookies/tiktok.txt
 ```
 
-The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.
+The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. That account should also **follow nobody**: anyone can send the bot a link, so everything the account can see — private profiles it follows included — becomes downloadable by every user. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.
 
 ## Limitations
 

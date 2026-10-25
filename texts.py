@@ -62,6 +62,10 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
+        "busy": (
+            "⏳ You already have two downloads running. Wait for them to "
+            "finish, then send the next link."
+        ),
         "blocked_content": "🚫 This post can't be downloaded with this bot.",
         "no_reason": "no reason given",
         "banned_abuse": (
@@ -279,6 +283,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "timeout": (
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
         ),
+        "busy": (
+            "⏳ У тебя уже скачиваются два видео. Дождись их и пришли "
+            "следующую ссылку."
+        ),
         "blocked_content": "🚫 Этот пост нельзя скачать через бота.",
         "no_reason": "причина не указана",
         "banned_abuse": (
@@ -462,6 +470,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "slow": "⏳ See võtab tavapärasest kauem aega…",
         "timeout": (
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
+        ),
+        "busy": (
+            "⏳ Sul on juba kaks allalaadimist käimas. Oota need ära ja "
+            "saada siis järgmine link."
         ),
         "blocked_content": (
             "🚫 Seda postitust ei saa selle botiga alla laadida."

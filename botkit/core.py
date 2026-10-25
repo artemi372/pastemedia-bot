@@ -378,9 +378,12 @@ class BotKit:
     async def _cleaner(self, bot: Bot) -> None:
         """Delete the messages whose time has come, every 5 seconds."""
         while True:
-            for chat_id, message_id in self.store.due_deletions(
-                int(time.time())
-            ):
+            try:
+                due = self.store.due_deletions(int(time.time()))
+            except Exception:
+                log.exception("couldn't read the deletion queue")
+                due = []
+            for chat_id, message_id in due:
                 try:
                     await bot.delete_message(chat_id, message_id)
                 except TelegramRetryAfter as e:
@@ -831,8 +834,25 @@ class BotKit:
         """Run a coroutine in the background, keeping a reference."""
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._task_done)
         return task
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        """Forget a finished background task and log its crash.
+
+        Without this a background loop that raised (the match tracker,
+        the deletion queue) would stop without a single line in the log.
+        """
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error(
+                "background task %s crashed",
+                task.get_coro().__qualname__,
+                exc_info=error,
+            )
 
     def request_stop(
         self,
