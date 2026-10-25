@@ -25,6 +25,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> without watermark (slideshows as albums)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b> Reels and posts (carousels as albums)\n"
+            "• <b>Facebook</b> Reels and videos\n"
             "\n"
             "<b>In any chat:</b> type <code>@{bot} </code>, paste a link and "
             "tap the result.\n"
@@ -41,7 +42,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "inline_title": "📥 Download video",
         "cached_title": "🎬 Video",
         "no_link": (
-            "Send me a link to TikTok, YouTube Shorts or Instagram Reels 🙂"
+            "Send me a link to TikTok, YouTube Shorts, Instagram or "
+            "Facebook Reels 🙂"
         ),
         "too_big": (
             "❌ The video is too big: Telegram lets bots send up to 50 MB,"
@@ -62,6 +64,14 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "slow": "⏳ This is taking longer than usual…",
         "timeout": "❌ The download took too long. Please try again later.",
+        "not_video_live": (
+            "🙈 That's a live stream, not a video: there's nothing to "
+            "download yet. Send the link once it's saved as a video."
+        ),
+        "not_video_profile": (
+            "🤨 That's a link to an account, not to a video. Open the "
+            "video itself and share its link."
+        ),
         "busy": (
             "⏳ You already have two downloads running. Wait for them to "
             "finish, then send the next link."
@@ -190,12 +200,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok without watermark, YouTube Shorts, Instagram Reels: "
-            "inline, in DMs and groups."
+            "TikTok without watermark, Shorts, Instagram and Facebook "
+            "Reels: inline, in DMs and groups."
         ),
         "profile.full": (
             "📥 Short videos right in Telegram: TikTok without watermark, "
-            "YouTube Shorts, Instagram Reels.\n"
+            "YouTube Shorts, Instagram and Facebook Reels.\n"
             "\n"
             "• Any chat: type @{bot} and paste a link\n"
             "• Private chat: just send me a link\n"
@@ -204,8 +214,8 @@ TEXTS: dict[str, dict[str, str]] = {
             "🎞 TikTok slideshows come as photo albums."
         ),
         "group_hello": (
-            "👋 Hi! Post TikTok, YouTube Shorts or Instagram Reels links here "
-            "and I'll reply with the video."
+            "👋 Hi! Post TikTok, YouTube Shorts, Instagram or Facebook Reels "
+            "links here and I'll reply with the video."
         ),
         "group_need_access": (
             "\n"
@@ -243,6 +253,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> без вотермарки (слайд-шоу — альбомом)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b>: рилсы и посты (карусели — альбомом)\n"
+            "• <b>Facebook</b>: рилсы и видео\n"
             "\n"
             "<b>В любом чате:</b> напиши <code>@{bot} </code>, вставь ссылку "
             "и нажми на результат.\n"
@@ -259,8 +270,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "inline_title": "📥 Скачать видео",
         "cached_title": "🎬 Видео",
         "no_link": (
-            "Пришли мне ссылку на TikTok, YouTube Shorts или Instagram Reels "
-            "🙂"
+            "Пришли мне ссылку на TikTok, YouTube Shorts или рилс из "
+            "Instagram или Facebook 🙂"
         ),
         "too_big": (
             "❌ Видео слишком большое: Telegram даёт ботам отправлять до"
@@ -282,6 +293,14 @@ TEXTS: dict[str, dict[str, str]] = {
         "slow": "⏳ Это занимает больше времени, чем обычно…",
         "timeout": (
             "❌ Скачивание заняло слишком много времени. Попробуй позже."
+        ),
+        "not_video_live": (
+            "🙈 Это прямой эфир, а не видео: скачивать пока нечего. "
+            "Пришли ссылку, когда эфир сохранят как видео."
+        ),
+        "not_video_profile": (
+            "🤨 Это ссылка на аккаунт, а не на видео. Открой само видео "
+            "и поделись его ссылкой."
         ),
         "busy": (
             "⏳ У тебя уже скачиваются два видео. Дождись их и пришли "
@@ -379,12 +398,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok без вотермарки, YouTube Shorts и Instagram Reels: inline, "
-            "в личке и в группах."
+            "TikTok без вотермарки, Shorts, рилсы Instagram и Facebook: "
+            "inline, в личке и в группах."
         ),
         "profile.full": (
             "📥 Короткие видео прямо в Telegram: TikTok без вотермарки, "
-            "YouTube Shorts, Instagram Reels.\n"
+            "YouTube Shorts, рилсы Instagram и Facebook.\n"
             "\n"
             "• В любом чате: напиши @{bot} и вставь ссылку\n"
             "• В личке: просто пришли мне ссылку\n"
@@ -394,7 +413,7 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "group_hello": (
             "👋 Привет! Кидайте сюда ссылки на TikTok, YouTube Shorts или "
-            "Instagram Reels, я отвечу видео."
+            "рилсы из Instagram и Facebook, я отвечу видео."
         ),
         "group_need_access": (
             "\n"
@@ -433,6 +452,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> ilma vesimärgita (slaidiesitlused albumina)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b> Reels ja postitused (karussellid albumina)\n"
+            "• <b>Facebook</b> Reels ja videod\n"
             "\n"
             "<b>Igas vestluses:</b> kirjuta <code>@{bot} </code>, kleebi link "
             "ja vajuta tulemusele.\n"
@@ -448,7 +468,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "inline_title": "📥 Laadi video alla",
         "cached_title": "🎬 Video",
         "no_link": (
-            "Saada mulle TikToki, YouTube Shortsi või Instagram Reelsi link 🙂"
+            "Saada mulle TikToki, YouTube Shortsi või Instagrami või "
+            "Facebooki Reelsi link 🙂"
         ),
         "too_big": (
             "❌ Video on liiga suur: Telegram lubab bottidel saata kuni"
@@ -470,6 +491,14 @@ TEXTS: dict[str, dict[str, str]] = {
         "slow": "⏳ See võtab tavapärasest kauem aega…",
         "timeout": (
             "❌ Allalaadimine võttis liiga kaua aega. Proovi hiljem uuesti."
+        ),
+        "not_video_live": (
+            "🙈 See on otseülekanne, mitte video: midagi pole veel alla "
+            "laadida. Saada link, kui ülekanne on videona salvestatud."
+        ),
+        "not_video_profile": (
+            "🤨 See on konto link, mitte video oma. Ava video ise ja "
+            "jaga selle linki."
         ),
         "busy": (
             "⏳ Sul on juba kaks allalaadimist käimas. Oota need ära ja "
@@ -571,12 +600,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok ilma vesimärgita, YouTube Shorts, Instagram Reels: "
-            "inline, privaatselt ja grupis."
+            "TikTok ilma vesimärgita, Shorts, Instagrami ja Facebooki "
+            "Reels: inline, privaatselt ja grupis."
         ),
         "profile.full": (
             "📥 Lühivideod otse Telegramis: TikTok ilma vesimärgita, YouTube "
-            "Shorts, Instagram Reels.\n"
+            "Shorts, Instagrami ja Facebooki Reels.\n"
             "\n"
             "• Igas vestluses: kirjuta @{bot} ja kleebi link\n"
             "• Privaatselt: saada mulle lihtsalt link\n"
@@ -585,8 +614,8 @@ TEXTS: dict[str, dict[str, str]] = {
             "🎞 TikToki slaidiesitlused saadan fotoalbumina."
         ),
         "group_hello": (
-            "👋 Tere! Saatke siia TikToki, YouTube Shortsi või Instagram "
-            "Reelsi linke ja ma vastan videoga."
+            "👋 Tere! Saatke siia TikToki, YouTube Shortsi või Instagrami ja "
+            "Facebooki Reelsi linke ja ma vastan videoga."
         ),
         "group_need_access": (
             "\n"

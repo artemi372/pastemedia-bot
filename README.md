@@ -10,7 +10,7 @@ Made by [@artemi372](https://t.me/artemi372) · try it: [@mediapastebot](https:/
 > Use at your own risk, and read the code before running it anywhere important.
 
 > [!NOTE]
-> **Instagram needs cookies** from a logged-in account, and YouTube may ask for them too — see [Cookies](#cookies-optional-for-instagram--youtube).
+> **Instagram needs cookies** from a logged-in account, and YouTube may ask for them too — see [Cookies](#cookies-optional-for-instagram--youtube--facebook).
 
 Type in any chat:
 
@@ -48,6 +48,11 @@ Settings and the recent videos survive a group turning into a supergroup (Telegr
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
 | Instagram | Reels, posts and carousels (photos + videos, sent as albums) | ⚠️ needs cookies from a logged-in account |
+| Facebook | Reels and videos, incl. share links (`fb.watch/...`, `facebook.com/share/r/...`) | ⚠️ new; share links may need cookies |
+
+**Not a video?** A link to a live stream or to an account (TikTok, YouTube, Instagram, Facebook) gets a reaction that says so — 🙈 live stream, 🤨 account — and in private chat a short explanation; nothing is downloaded. The same goes for a short link that turns out to lead to one. In groups it's only the reaction, so the chat stays clean.
+
+**Reactions:** 👀 working on it, 🤷 failed, 🙈 live stream, 🤨 account. Custom (Premium) emoji can replace them via `REACTION_*_ID` in `.env`, but Telegram lets a bot use a custom reaction only in groups whose admins added that emoji to the allowed reactions — never in private chats. Wherever it isn't allowed, the standard emoji is used automatically.
 
 **Languages:** English, Russian, Estonian — picked automatically from the Telegram app language, or manually with `/language`. A group speaks the language of whoever added the bot until admins pick one in `/settings` or with `/language`; they can turn restart/shutdown messages on or off in `/settings`. The bot's texts live in [`texts.py`](texts.py), the shared ones in [`botkit/texts.py`](botkit/texts.py).
 
@@ -112,14 +117,15 @@ In groups, the bot ignores links inside long texts (over 200 characters besides 
 
 Known chats, settings, the `file_id` cache, recent videos, bans and blocked posts are kept in `data/bot.db` (runtime data, out of git). An older `state.json` and `media_cache.json` are imported on the first start and renamed to `*.imported`.
 
-### Cookies (optional, for Instagram / YouTube)
+### Cookies (optional, for Instagram / YouTube / Facebook)
 
-If Instagram or YouTube refuses downloads ("login required", "sign in to confirm you're not a bot"), export cookies from a browser where you're logged in (e.g. with the *Get cookies.txt LOCALLY* extension) and save them as:
+If Instagram, YouTube or Facebook refuses downloads ("login required", "sign in to confirm you're not a bot"), export cookies from a browser where you're logged in (e.g. with the *Get cookies.txt LOCALLY* extension) and save them as:
 
 ```
 cookies/instagram.txt
 cookies/youtube.txt
 cookies/tiktok.txt
+cookies/facebook.txt
 ```
 
 The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. That account should also **follow nobody**: anyone can send the bot a link, so everything the account can see — private profiles it follows included — becomes downloadable by every user. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.

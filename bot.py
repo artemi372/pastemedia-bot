@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import hashlib
 import html
+import http.cookiejar
 import json
 import logging
 import os
@@ -72,6 +73,7 @@ from aiogram.types import (
     InputTextMessageContent,
     LinkPreviewOptions,
     Message,
+    ReactionTypeCustomEmoji,
     ReactionTypeEmoji,
     ReplyParameters,
     User,
@@ -125,10 +127,25 @@ GROUP_TEXT_LIMIT = 200
 GROUP_URL_LIMIT = 2
 APPEAL_COOLDOWN = 24 * 60 * 60  # seconds between appeals of one user
 ALBUM_LIMIT = 10  # max photos in one Telegram album
-# Reactions on the message with a link. Bots can only use Telegram's
-# standard reaction emoji.
-REACTION_WORKING = "👀"
-REACTION_FAILED = "🤷"
+# Reactions on the message with a link: working on it, failed, a live
+# stream, an account instead of a video. Bots can use only Telegram's
+# standard reaction emoji, plus custom (Premium) emoji where a group's
+# admins allowed them as reactions: their ids go into .env as
+# REACTION_WORKING_ID and so on, and are used wherever Telegram accepts
+# them.
+REACTIONS = {
+    "working": "👀",
+    "failed": "🤷",
+    "live": "🙈",
+    "profile": "🤨",
+}
+CUSTOM_REACTIONS = {
+    kind: os.getenv(f"REACTION_{kind.upper()}_ID", "").strip()
+    for kind in REACTIONS
+}
+# After a chat refused a custom reaction, it's not tried there again for
+# this long: until then the standard emoji is used.
+CUSTOM_RETRY = 6 * 60 * 60
 # What to do with a group message that has a link, set by admins with
 # /cleanup. Only "keep" replies to it; the others delete it and send
 # the media as a separate message with an optional caption.
@@ -176,7 +193,34 @@ PLATFORM_PATTERNS = {
         r"https?://(?:www\.)?instagram\.com/"
         r"(?:[\w.]+/)?(?:reels?|p)/[\w-]+\S*"
     ),
+    # Reels, videos and the share links to them (fb.watch, /share/r/,
+    # /share/v/), which are followed to the post first.
+    "facebook": (
+        r"https?://(?:(?:www|m|web)\.)?facebook\.com/"
+        r"(?:reel/\d+|share/[rv]/[\w-]+|watch/?\?\S*?\bv=\d+"
+        r"|[\w.-]+/videos/(?:[\w.-]+/)?\d+)\S*"
+        r"|https?://(?:www\.)?fb\.watch/[\w-]+\S*"
+    ),
 }
+# The site of each platform: a short link must lead there, and links to
+# it that aren't videos (live streams, accounts) are recognised.
+PLATFORM_HOSTS = {
+    "tiktok": "tiktok.com",
+    "youtube": "youtube.com",
+    "instagram": "instagram.com",
+    "facebook": "facebook.com",
+}
+PLATFORM_HOMES = {
+    "tiktok": "https://www.tiktok.com/",
+    "facebook": "https://www.facebook.com/",
+}
+# Any link to one of these sites (to find live streams and accounts).
+PLATFORM_URL_RE = re.compile(
+    r"https?://(?:[\w-]+\.)*(?:"
+    + "|".join(re.escape(h) for h in PLATFORM_HOSTS.values())
+    + r")/\S*",
+    re.I,
+)
 LINK_RE = re.compile(
     "|".join(f"(?:{p})" for p in PLATFORM_PATTERNS.values()), re.I
 )
@@ -248,6 +292,15 @@ class OffsiteError(RuntimeError):
     """A short link leads somewhere other than the platform itself."""
 
 
+class NotVideoError(RuntimeError):
+    """The link is a live stream or an account, not a video."""
+
+    def __init__(self, kind: str):
+        """Remember what it is: "live" or "profile"."""
+        super().__init__(kind)
+        self.kind = kind
+
+
 class BlockedError(RuntimeError):
     """The post is on the block list."""
 
@@ -283,6 +336,8 @@ def error_text(lang: str, e: Exception) -> str:
         return t(lang, "busy")
     if isinstance(e, OffsiteError):
         return t(lang, "failed")
+    if isinstance(e, NotVideoError):
+        return t(lang, f"not_video_{e.kind}")
     # A network error while uploading is almost always a timeout.
     if isinstance(e, (DownloadTimeoutError, TelegramNetworkError)):
         return t(lang, "timeout")
@@ -507,47 +562,254 @@ def _pick_clean_format(info: dict) -> dict:
     return max(fmts, key=score)
 
 
-def _http() -> httpx.Client:
-    """Create an HTTP client that looks like a regular browser."""
+def _http(platform: str = "tiktok") -> httpx.Client:
+    """Create an HTTP client that looks like a regular browser.
+
+    cookies/<platform>.txt, if present, is sent too: Facebook shows
+    share links to logged-in viewers only.
+    """
+    cookies = None
+    cookiefile = cookies_for(platform)
+    if cookiefile:
+        jar = http.cookiejar.MozillaCookieJar(cookiefile)
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+            cookies = jar
+        except (OSError, http.cookiejar.LoadError) as e:
+            log.warning("couldn't read %s: %s", cookiefile, e)
     return httpx.Client(
         headers={
             "User-Agent": USER_AGENT,
-            "Referer": "https://www.tiktok.com/",
+            "Referer": PLATFORM_HOMES.get(platform, ""),
         },
+        cookies=cookies,
         follow_redirects=True,
         timeout=20,
     )
 
 
-def is_tiktok_host(url: str) -> bool:
-    """Tell whether a URL is on tiktok.com itself (or a subdomain)."""
+def on_platform(url: str, platform: str) -> bool:
+    """Tell whether a URL is on the platform's own site."""
     try:
         parts = urlsplit(url)
     except ValueError:
         return False
     host = (parts.hostname or "").lower()
+    base = PLATFORM_HOSTS[platform]
     return parts.scheme in ("http", "https") and (
-        host == "tiktok.com" or host.endswith(".tiktok.com")
+        host == base or host.endswith("." + base)
     )
 
 
-def resolve_url(url: str) -> str:
-    """Follow short links (vm.tiktok.com, tt.site) to the post URL.
+def post_id(platform: str, url: str) -> str | None:
+    """Return the id of the post a link points to, or None.
 
-    The link must end up on tiktok.com. Otherwise whatever site it
-    leads to would be downloaded and cached as that TikTok post, for
-    everyone who sends the real one later.
+    Only the path counts (and Facebook's ?v=): "?x=/video/<id>" in a
+    query must not pick the id.
+    """
+    parts = urlsplit(url)
+    if platform == "facebook":
+        m = re.search(r"/(?:reel|videos)/(\d+)", parts.path)
+        if m:
+            return m.group(1)
+        if re.fullmatch(r"/watch/?", parts.path):
+            m = re.search(r"(?:^|&)v=(\d+)", parts.query)
+            return m.group(1) if m else None
+        return None
+    m = re.search(r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", parts.path)
+    return m.group(1) if m else None
+
+
+def is_direct(url: str) -> bool:
+    """Tell whether a link already names its post, without redirects.
+
+    TikTok and Facebook short and share links only show where they lead
+    after following them; such a link needs the network for its key.
+    """
+    platform = platform_of(url)
+    if platform == "tiktok":
+        parts = urlsplit(url)
+        return (parts.hostname or "").lower() in (
+            "tiktok.com",
+            "www.tiktok.com",
+            "m.tiktok.com",
+        ) and bool(
+            re.fullmatch(r"/@[\w.-]+/(?:video|photo)/\d+/?", parts.path)
+        )
+    if platform == "facebook":
+        return (
+            on_platform(url, "facebook")
+            and post_id("facebook", url) is not None
+        )
+    return True
+
+
+def resolve_url(url: str) -> str:
+    """Follow a short or share link to the post it leads to.
+
+    TikTok (vm.tiktok.com, tt.site, /t/) and Facebook (fb.watch,
+    /share/) links. The link must end up on the platform's own site:
+    otherwise whatever site it leads to would be downloaded and cached
+    as that post, for everyone who sends the real one later. A link
+    that turns out to be a live stream or an account raises
+    NotVideoError.
     """
     if url not in resolved:
-        with _http() as c:
+        platform = platform_of(url)
+        with _http(platform) as c:
             full = str(c.get(url).url)
-        if not is_tiktok_host(full):
+        if not on_platform(full, platform):
             raise OffsiteError(f"{url} leads to {urlsplit(full).hostname}")
-        if not re.search(r"/(?:video|photo)/\d+", full):
+        kind = not_video_kind(full)
+        if kind:
+            raise NotVideoError(kind)
+        if post_id(platform, full) is None:
             # A login or captcha page: don't keep it, try again later.
             return full
         remember(resolved, url, full, RESOLVED_LIMIT)
     return resolved[url]
+
+
+# Paths that are sections of a site, not accounts: instagram.com/explore
+# is not someone called "explore".
+NOT_ACCOUNTS = {
+    "instagram": {
+        "p",
+        "reel",
+        "reels",
+        "tv",
+        "stories",
+        "explore",
+        "accounts",
+        "direct",
+        "about",
+        "legal",
+        "developer",
+        "web",
+        "challenge",
+        "privacy",
+        "terms",
+        "directory",
+        "emails",
+        "session",
+    },
+    "facebook": {
+        "reel",
+        "reels",
+        "share",
+        "watch",
+        "groups",
+        "events",
+        "gaming",
+        "marketplace",
+        "login",
+        "login.php",
+        "help",
+        "photo",
+        "photo.php",
+        "story.php",
+        "permalink.php",
+        "pages",
+        "stories",
+        "videos",
+        "hashtag",
+        "search",
+        "ads",
+        "business",
+        "policies",
+        "privacy",
+        "settings",
+        "notifications",
+        "messages",
+        "friends",
+        "bookmarks",
+        "plugins",
+        "sharer",
+        "sharer.php",
+        "dialog",
+        "l.php",
+        "flx",
+    },
+}
+
+
+def not_video_kind(url: str) -> str | None:
+    """Tell what a platform link is if it isn't a video.
+
+    "live" for a live stream, "profile" for an account or channel,
+    None for anything else (a video, or a page the bot doesn't judge).
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    platform = next(
+        (
+            p
+            for p, base in PLATFORM_HOSTS.items()
+            if host == base or host.endswith("." + base)
+        ),
+        None,
+    )
+    segs = [s for s in parts.path.split("/") if s]
+    if platform is None or not segs:
+        return None
+    first, rest = segs[0].lower(), [s.lower() for s in segs[1:]]
+    if platform == "tiktok":
+        if not first.startswith("@"):
+            return None
+        if rest[:1] == ["live"]:
+            return "live"
+        return "profile" if not rest else None
+    if platform == "youtube":
+        if first == "live":
+            return "live"
+        if first.startswith("@") or (
+            first in ("channel", "c", "user") and rest
+        ):
+            tail = rest[1:] if not first.startswith("@") else rest
+            if tail[:1] == ["live"]:
+                return "live"
+            if not tail or tail[0] in (
+                "videos",
+                "shorts",
+                "streams",
+                "featured",
+            ):
+                return "profile"
+        return None
+    if platform == "instagram":
+        if first in NOT_ACCOUNTS["instagram"]:
+            return None
+        if rest[:1] == ["live"]:
+            return "live"
+        return "profile" if not rest else None
+    # Facebook
+    if first == "watch" and "live" in rest:
+        return "live"
+    if first == "profile.php" or first == "people":
+        return "profile"
+    if first in NOT_ACCOUNTS["facebook"]:
+        return None
+    if rest[:1] == ["live"] or rest[:2] == ["videos", "live"]:
+        return "live"
+    return "profile" if not rest else None
+
+
+def find_not_video(text: str | None) -> tuple[str, str] | None:
+    """Return (link, kind) of a live stream or account link in a text.
+
+    Only when the text has no supported video link at all.
+    """
+    if not text or LINK_RE.search(text):
+        return None
+    for m in PLATFORM_URL_RE.finditer(text):
+        link = m.group(0).rstrip(TRAILING)
+        kind = not_video_kind(link)
+        if kind:
+            return link, kind
+    return None
 
 
 def is_instagram_post(url: str) -> bool:
@@ -580,45 +842,30 @@ def media_key(url: str) -> str:
     """
     platform = platform_of(url)
     full = url
-    if platform == "tiktok" and not is_full_tiktok(url):
-        # A link off TikTok gets no post key: the download refuses it.
+    if not is_direct(url):
+        # A link off the platform gets no post key: the download
+        # refuses it.
         with contextlib.suppress(Exception):
             full = resolve_url(url)
-    # Only the path counts: "?x=/video/<id>" must not pick the key.
-    m = re.search(
-        r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", urlsplit(full).path
-    )
-    if m:
-        return f"{platform}:{m.group(1)}"
+    pid = post_id(platform, full)
+    if pid:
+        return f"{platform}:{pid}"
     return full.split("?")[0].rstrip("/")
-
-
-def is_full_tiktok(url: str) -> bool:
-    """Tell whether a link already is a post on tiktok.com itself.
-
-    Such a link needs no network to get its key. Short links do: where
-    they lead is only known after following them.
-    """
-    parts = urlsplit(url)
-    return (parts.hostname or "").lower() in (
-        "tiktok.com",
-        "www.tiktok.com",
-        "m.tiktok.com",
-    ) and bool(re.fullmatch(r"/@[\w.-]+/(?:video|photo)/\d+/?", parts.path))
 
 
 async def offload(func: Callable[[str], Any], url: str) -> Any:
     """Run media_key or is_album without blocking the bot.
 
-    Only an unresolved TikTok short link needs the network; everything
-    else is answered right here. The network case runs in asyncio's
-    own threads, which downloads never use.
+    Only an unresolved short or share link (and a TikTok album check)
+    needs the network; everything else is answered right here. The
+    network case runs in asyncio's own threads, which downloads never
+    use.
     """
-    if (
-        platform_of(url) != "tiktok"
-        or url in resolved
-        or (func is media_key and is_full_tiktok(url))
-    ):
+    network = url not in resolved and (
+        not is_direct(url)
+        or (func is is_album and platform_of(url) == "tiktok")
+    )
+    if not network:
         return func(url)
     return await asyncio.to_thread(func, url)
 
@@ -985,6 +1232,11 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
         return download_instagram_single(url, outdir)
     if platform == "instagram":
         return download_instagram_reel(url, outdir)
+    if platform == "facebook" and not is_direct(url):
+        # yt-dlp doesn't know share links: follow them to the post.
+        url = resolve_url(url)
+        if post_id("facebook", url) is None:
+            raise RuntimeError(f"Facebook didn't open {url} (cookies?)")
     return download_generic(url, outdir, platform)
 
 
@@ -997,15 +1249,29 @@ def download_instagram_reel(url: str, outdir: str) -> tuple[str, dict]:
     """
     try:
         return download_generic(url, outdir, "instagram")
-    except TooBigError:
+    except (TooBigError, NotVideoError):
         raise
     except Exception as e:
         log.warning("yt-dlp failed on %s (%s), trying gallery-dl", url, e)
     return download_instagram_single(url, outdir)
 
 
+def no_live(info: dict, *, incomplete: bool = False) -> None:
+    """Refuse live streams (yt-dlp's match_filter).
+
+    A stream has no end: yt-dlp would record it until the timeout and
+    the user would get a broken file, or nothing.
+    """
+    if info.get("is_live") or info.get("live_status") in (
+        "is_live",
+        "is_upcoming",
+        "post_live",
+    ):
+        raise NotVideoError("live")
+
+
 def generic_opts(outdir: str, platform: str) -> dict:
-    """Return yt-dlp options for YouTube Shorts and Instagram Reels."""
+    """Return yt-dlp options for Shorts, Reels and Facebook videos."""
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -1031,8 +1297,9 @@ def generic_opts(outdir: str, platform: str) -> dict:
         # compress.
         "max_filesize": MAX_SOURCE_BYTES,
         # Never the "generic" extractor, which downloads from any site:
-        # only YouTube and Instagram links get here.
+        # only YouTube, Instagram and Facebook links get here.
         "allowed_extractors": ["default", "-generic"],
+        "match_filter": no_live,
     }
     cookiefile = cookies_for(platform)
     if cookiefile:
@@ -1041,7 +1308,7 @@ def generic_opts(outdir: str, platform: str) -> dict:
 
 
 def download_generic(url: str, outdir: str, platform: str) -> tuple[str, dict]:
-    """Download a YouTube Short or an Instagram Reel.
+    """Download a YouTube Short, an Instagram Reel or a Facebook video.
 
     Take the best H.264 mp4 up to 1080p, merged with the audio track.
     """
@@ -1073,6 +1340,7 @@ def download_tiktok(url: str, outdir: str) -> tuple[str, dict]:
         "socket_timeout": 30,
         # Never the "generic" extractor, which downloads from any site.
         "allowed_extractors": ["default", "-generic"],
+        "match_filter": no_live,
     }
     # Needed for posts TikTok shows only to logged-in adults.
     cookiefile = cookies_for("tiktok")
@@ -1384,19 +1652,60 @@ async def _download_album(
         return items
 
 
-async def react(bot: Bot, msg: Message, emoji: str | None):
-    """Set a reaction on a message, or remove it with emoji=None.
+# chat id -> when it last refused a custom emoji reaction.
+custom_refused: dict[int, float] = {}
 
-    Group admins can restrict reactions, so a refused reaction is only
+
+async def react(bot: Bot, msg: Message, kind: str | None):
+    """Set a reaction on a message, or remove it with kind=None.
+
+    ``kind`` is a key of REACTIONS. A custom (Premium) emoji from .env
+    is tried first in groups: Telegram lets a bot use one only where the
+    group's admins allowed it as a reaction (never in private chats).
+    If the chat refuses it, the standard emoji goes instead, and the
+    custom one isn't tried there for CUSTOM_RETRY seconds. Group admins
+    can restrict reactions altogether, so a refused reaction is only
     logged: the download goes on without it.
     """
-    reaction = [ReactionTypeEmoji(emoji=emoji)] if emoji else []
+    chat_id = msg.chat.id
+    custom = CUSTOM_REACTIONS.get(kind or "")
+    if (
+        custom
+        and not is_private(msg)
+        and time.time() - custom_refused.get(chat_id, 0) > CUSTOM_RETRY
+    ):
+        try:
+            await bot.set_message_reaction(
+                chat_id,
+                msg.message_id,
+                reaction=[ReactionTypeCustomEmoji(custom_emoji_id=custom)],
+            )
+            return
+        except TelegramBadRequest as e:
+            custom_refused[chat_id] = time.time()
+            log.info("chat %s refused custom reaction: %s", chat_id, e)
+        except Exception as e:
+            log.info("couldn't set custom reaction %s: %s", kind, e)
+    reaction = [ReactionTypeEmoji(emoji=REACTIONS[kind])] if kind else []
     try:
         await bot.set_message_reaction(
-            msg.chat.id, msg.message_id, reaction=reaction
+            chat_id, msg.message_id, reaction=reaction
         )
     except Exception as e:
-        log.info("couldn't set reaction %r: %s", emoji, e)
+        log.info("couldn't set reaction %s: %s", kind, e)
+
+
+def failure_reaction(e: Exception) -> str:
+    """Return the reaction for a failed link."""
+    return e.kind if isinstance(e, NotVideoError) else "failed"
+
+
+def log_failure(url: str, e: Exception) -> None:
+    """Log a failed link: a stream or an account is no error at all."""
+    if isinstance(e, NotVideoError):
+        log.info("not a video (%s): %s", e.kind, url)
+    else:
+        log.error("download failed: %s", url, exc_info=e)
 
 
 def sender_mention(user: User | None) -> str:
@@ -1565,14 +1874,14 @@ async def on_link(msg: Message, bot: Bot):
         await msg.answer(ban_text(lang, ban))
         return
     url = find_link(msg.text)
-    await react(bot, msg, REACTION_WORKING)
+    await react(bot, msg, "working")
     status = await msg.reply(t(lang, "downloading"))
     try:
         async with slow_notice(lambda: status.edit_text(t(lang, "slow"))):
             await reply_with_media(bot, msg, url)
     except Exception as e:
-        log.exception("download failed: %s", url)
-        await react(bot, msg, REACTION_FAILED)
+        log_failure(url, e)
+        await react(bot, msg, failure_reaction(e))
         # In private chats the error stays, so the user can see what
         # happened with their link.
         await status.edit_text(error_text(lang, e))
@@ -1583,6 +1892,19 @@ async def on_link(msg: Message, bot: Bot):
         await status.delete()
     except Exception:
         log.warning("couldn't delete status message")
+
+
+@router.message(F.text.func(find_not_video), ~F.text.startswith("/"), private)
+async def on_not_video(msg: Message, bot: Bot):
+    """Explain that a live stream or an account link has no video.
+
+    The message gets a reaction that says what the link is, and a
+    short answer: nothing is downloaded.
+    """
+    _, kind = find_not_video(msg.text)
+    await react(bot, msg, kind)
+    lang = lang_of(msg.chat.id, msg.from_user)
+    await msg.reply(t(lang, f"not_video_{kind}"))
 
 
 @router.message(Command("help"))
@@ -1923,7 +2245,7 @@ async def on_group_link(msg: Message, bot: Bot):
     earlier = db.earlier_post(msg.chat.id, key)
     if earlier and await point_to_earlier(bot, msg, earlier, mode, lang):
         return
-    await react(bot, msg, REACTION_WORKING)
+    await react(bot, msg, "working")
     try:
         async with ChatActionSender.upload_video(
             bot=bot, chat_id=msg.chat.id, message_thread_id=thread
@@ -1942,10 +2264,13 @@ async def on_group_link(msg: Message, bot: Bot):
                 ),
             )
     except Exception as e:
-        log.exception("download failed: %s", url)
+        log_failure(url, e)
         # The original stays on failure, so the link isn't lost.
-        await react(bot, msg, REACTION_FAILED)
-        kit.autodelete(await msg.reply(error_text(lang, e)), TTL_SHORT)
+        await react(bot, msg, failure_reaction(e))
+        if not isinstance(e, NotVideoError):
+            # A stream or an account only gets the reaction: in a
+            # group nobody needs a message about it.
+            kit.autodelete(await msg.reply(error_text(lang, e)), TTL_SHORT)
         return
     if sent_id is not None:
         db.remember_post(msg.chat.id, key, sent_id)
@@ -1960,6 +2285,25 @@ async def on_group_link(msg: Message, bot: Bot):
     except Exception as e:
         log.warning("couldn't delete the link message: %s", e)
         await react(bot, msg, None)
+
+
+@router.message(
+    F.text.func(find_not_video),
+    ~F.text.startswith("/"),
+    group,
+    F.via_bot.is_(None),
+)
+async def on_group_not_video(msg: Message, bot: Bot):
+    """React to a live stream or account link posted in a group.
+
+    Only the reaction, no text: the chat stays clean. Announcements
+    (long texts, many links) are left alone, as with videos.
+    """
+    link, kind = find_not_video(msg.text)
+    if looks_like_announcement(msg, link) or ban_of(msg.from_user):
+        return
+    log.info("group %s: %s link, not a video", msg.chat.id, kind)
+    await react(bot, msg, kind)
 
 
 async def point_to_earlier(
@@ -2197,7 +2541,7 @@ async def on_chosen(r: ChosenInlineResult, bot: Bot):
             media=InputMediaVideo(media=file_id, supports_streaming=True),
         )
     except Exception as e:
-        log.exception("download failed: %s", url)
+        log_failure(url, e)
         await bot.edit_message_text(
             inline_message_id=r.inline_message_id, text=error_text(lang, e)
         )
