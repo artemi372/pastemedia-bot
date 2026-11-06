@@ -108,7 +108,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "rule.harassment": "Harassment, bullying or someone's private info",
         "rule.scam": "Scams or fraud",
         "rule.illegal": "Illegal content (drugs, weapons and the like)",
-        "rule.copyright": "Sharing what you aren't allowed to repost",
+        "rule.copyright": (
+            "Someone else's content without the author's permission"
+            " (copyright)"
+        ),
         "rule.private": (
             "Content from private accounts or shared with you in confidence"
         ),
@@ -408,9 +411,11 @@ TEXTS: dict[str, dict[str, str]] = {
         "rule.violence": "Насилие, жестокость или шок-контент",
         "rule.hate": "Разжигание ненависти или экстремизм",
         "rule.harassment": "Травля, оскорбления или чужие личные данные",
-        "rule.scam": "Мошенничество",
+        "rule.scam": "Мошенничество и скам",
         "rule.illegal": "Незаконный контент (наркотики, оружие и т. п.)",
-        "rule.copyright": "Репост того, что нельзя распространять",
+        "rule.copyright": (
+            "Чужой контент без разрешения автора (авторские права)"
+        ),
         "rule.private": (
             "Контент из закрытых аккаунтов или присланный тебе лично"
         ),
@@ -637,10 +642,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "rule.violence": "Vägivald, verine või šokeeriv sisu",
         "rule.hate": "Vihakõne või äärmuslus",
         "rule.harassment": "Kiusamine, solvamine või kellegi isikuandmed",
-        "rule.scam": "Pettus",
+        "rule.scam": "Pettused ja skämmid",
         "rule.illegal": "Ebaseaduslik sisu (narkootikumid, relvad jms)",
         "rule.copyright": (
-            "Sellise sisu jagamine, mida sul pole lubatud jagada"
+            "Kellegi teise sisu ilma autori loata (autoriõigus)"
         ),
         "rule.private": (
             "Sisu privaatsetelt kontodelt või sulle usalduslikult saadetud"
