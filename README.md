@@ -156,7 +156,7 @@ Logs and the console speak English; users get their own language. Tests: `python
 
 ## Privacy and terms
 
-The official bot's [Privacy Policy](https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07) and [Terms of Use](https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07) are linked from `/privacy`, `/terms`, `/help` and the bot's profile. Telegram requires every bot to have a privacy policy, so if you run your own copy, publish your own and set `PRIVACY_URL` and `TERMS_URL` in `.env` (an empty value hides the link). Also add the privacy link in @BotFather.
+The official bot's [Privacy Policy](https://telegra.ph/Media-Paste-Bot--Privacy-Policy-10-07) and [Terms of Use](https://telegra.ph/Media-Paste-Bot--Terms-of-Use-10-07) are linked from `/privacy`, `/terms`, `/help` and the bot's profile. Telegram requires every bot to have a privacy policy, so if you run your own copy, publish your own and set `PRIVACY_URL` and `TERMS_URL` in `.env` (an empty value hides the link). Pages in other languages go in `PRIVACY_URL_RU`, `TERMS_URL_RU`, `PRIVACY_URL_ET`, `TERMS_URL_ET`: chats in that language get them, and an empty one falls back to the English link. Also add the privacy link in @BotFather.
 
 ## Disclaimer
 
