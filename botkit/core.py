@@ -429,8 +429,8 @@ class BotKit:
         links = [
             f'<a href="{escape(url)}">{t(lang, name)}</a>'
             for url, name in (
-                (self.cfg.terms_url, "legal.terms_name"),
-                (self.cfg.privacy_url, "legal.privacy_name"),
+                (self.cfg.terms_for(lang), "legal.terms_name"),
+                (self.cfg.privacy_for(lang), "legal.privacy_name"),
             )
             if url
         ]
@@ -631,9 +631,10 @@ class BotKit:
                 ),
                 120,
             )
+            privacy_url = self.cfg.privacy_for(lang)
             privacy = (
-                t(lang, "profile.privacy", url=self.cfg.privacy_url)
-                if self.cfg.privacy_url
+                t(lang, "profile.privacy", url=privacy_url)
+                if privacy_url
                 else ""
             )
             if utf16_len(privacy) > 200:

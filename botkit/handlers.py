@@ -73,7 +73,7 @@ def build_router(kit: "BotKit") -> Router:
         """
         lang = kit.lang_of(message.chat.id, message.from_user)
         privacy = command.command.lower() == "privacy"
-        url = kit.cfg.privacy_url if privacy else kit.cfg.terms_url
+        url = kit.cfg.privacy_for(lang) if privacy else kit.cfg.terms_for(lang)
         name = "legal.privacy_name" if privacy else "legal.terms_name"
         text = t(lang, "legal.privacy" if privacy else "legal.terms")
         if url:

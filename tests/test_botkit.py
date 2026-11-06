@@ -730,6 +730,27 @@ def test_privacy_and_id(tmp_path):
     asyncio.run(run())
 
 
+def test_legal_links_per_language(tmp_path, monkeypatch):
+    """PRIVACY_URL_RU and such win for that language only."""
+    from botkit.config import load_config
+
+    monkeypatch.setenv("BOT_TOKEN", "1:x")
+    monkeypatch.setenv("PRIVACY_URL", "https://example.com/en/privacy")
+    monkeypatch.setenv("PRIVACY_URL_RU", "https://example.com/ru/privacy")
+    monkeypatch.setenv("PRIVACY_URL_ET", "")
+    monkeypatch.setenv("TERMS_URL_RU", "https://example.com/ru/terms")
+    cfg = load_config(bot_name="T", default_lang="en", terms_url="x")
+    assert cfg.privacy_for("ru") == "https://example.com/ru/privacy"
+    # An empty ET link falls back to the English one.
+    assert cfg.privacy_for("et") == "https://example.com/en/privacy"
+    assert cfg.terms_for("ru") == "https://example.com/ru/terms"
+    assert cfg.terms_for("en") == "x"
+    kit = BotKit(cfg, KitStore(tmp_path / "bot.db"), menu=["help"])
+    with texts():
+        assert "ru/terms" in kit.legal_links("ru")
+        assert "ru/terms" not in kit.legal_links("et")
+
+
 def test_shut_down_stop(tmp_path):
     """A /stop posts notices, shows offline and confirms the update."""
 

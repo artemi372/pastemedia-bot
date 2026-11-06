@@ -6,7 +6,7 @@ bot's own settings (API keys, intervals) are read by the bot itself.
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -37,6 +37,19 @@ class KitConfig:
     terms_url: str
     # Whether bot messages in groups delete themselves after a while.
     auto_delete: bool
+    # The same pages in other languages: lang -> url, from
+    # PRIVACY_URL_RU, TERMS_URL_ET and so on. A language without its
+    # own page gets privacy_url / terms_url.
+    privacy_urls: dict[str, str] = field(default_factory=dict)
+    terms_urls: dict[str, str] = field(default_factory=dict)
+
+    def privacy_for(self, lang: str) -> str:
+        """Return the privacy policy link for a language."""
+        return self.privacy_urls.get(lang) or self.privacy_url
+
+    def terms_for(self, lang: str) -> str:
+        """Return the terms of use link for a language."""
+        return self.terms_urls.get(lang) or self.terms_url
 
 
 def _flag(name: str, default: str) -> bool:
@@ -53,6 +66,21 @@ def _ids(raw: str) -> tuple[int, ...]:
     """Parse "123, 456" into (123, 456), skipping anything else."""
     parts = raw.replace(",", " ").split()
     return tuple(int(p) for p in parts if p.lstrip("-").isdigit())
+
+
+def _per_lang(name: str) -> dict[str, str]:
+    """Read NAME_RU, NAME_ET... from .env into {"ru": url, ...}.
+
+    Empty values are left out, so that language falls back to NAME.
+    """
+    prefix = name + "_"
+    return {
+        key[len(prefix) :].lower(): value.strip()
+        for key, value in os.environ.items()
+        if key.startswith(prefix)
+        and key[len(prefix) :].isalpha()
+        and value.strip()
+    }
 
 
 def load_config(
@@ -86,4 +114,6 @@ def load_config(
         privacy_url=os.getenv("PRIVACY_URL", privacy_url).strip(),
         terms_url=os.getenv("TERMS_URL", terms_url).strip(),
         auto_delete=_flag("AUTO_DELETE", "1"),
+        privacy_urls=_per_lang("PRIVACY_URL"),
+        terms_urls=_per_lang("TERMS_URL"),
     )
