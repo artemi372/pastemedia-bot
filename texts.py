@@ -214,24 +214,25 @@ TEXTS: dict[str, dict[str, str]] = {
         "admin_appeal_no": "\n\n❌ Rejected",
         "legal.privacy": (
             "🔒 <b>Privacy</b>\n\n"
-            "The bot keeps only what it needs: your Telegram ID (for rare"
-            " announcements about the bot) and language if you changed it,"
-            " group IDs and settings, and copies of"
-            " downloaded videos with their links in a private channel, plus,"
-            " for a week, who requested each one, and a list of blocked"
-            " users, to stop abuse."
-            " Names, phone numbers and message texts are not stored.\n\n"
-            "Only the author sees this, and only to run the bot. He gives"
-            " his word not to show or pass on to anyone what you downloaded"
-            " or that you did, except reports of illegal content to"
-            " Telegram. Data is never sold."
+            "The bot keeps only what it needs: your Telegram ID and language,"
+            " group IDs and settings, copies of downloaded media with their"
+            " links in a private channel, for a week who requested each"
+            " one, and warnings and bans, to stop abuse. Names, phone"
+            " numbers and message texts are not stored.\n\n"
+            "Only the author sees this, and only to run the bot. He doesn't"
+            " show or pass on to anyone what you downloaded or that it was"
+            " you, except reports of illegal content to Telegram or where"
+            " the law requires it. Data is never sold."
         ),
         "legal.terms": (
             "📜 <b>Terms of Use</b>\n\n"
             "The bot is free and provided as is, with no guarantees. You are"
             " responsible for the links you send: only share what you're"
-            " allowed to, nothing illegal, no spam. With /cleanup, your"
-            " comment next to a link is reposted under the video."
+            " allowed to. Nothing illegal, no 18+, gore, hate or scams, no"
+            " spam. With /cleanup, your comment next to a link is reposted"
+            " under the video.\n\n"
+            "Breaking the rules gets you a warning; after the third one the"
+            " bot stops working for you. Warnings expire after 90 days."
         ),
         "legal.contact": "\nQuestions, data or copy removal: {tg}",
         "menu.group.cleanup": "What to do with link messages (admins)",
@@ -444,24 +445,25 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "legal.privacy": (
             "🔒 <b>Конфиденциальность</b>\n\n"
-            "Бот хранит только нужное для работы: твой Telegram ID (для"
-            " редких объявлений о боте) и язык, если ты его менял,"
-            " ID и настройки групп, а также копии"
-            " скачанных видео со ссылками в закрытом канале, неделю — кто"
-            " запросил каждое, и список заблокированных, чтобы пресекать"
-            " злоупотребления. Имена, телефоны"
-            " и тексты сообщений не сохраняются.\n\n"
-            "Всё это видит только автор и только для работы бота. Он даёт"
-            " слово никому не показывать и не передавать, что ты скачивал и"
-            " что это был ты, — кроме жалоб на незаконный контент в"
-            " Telegram. Данные никому не продаются."
+            "Бот хранит только нужное для работы: твой Telegram ID и язык,"
+            " ID и настройки групп, копии скачанных видео со ссылками в"
+            " закрытом канале, неделю — кто запросил каждое, а также"
+            " предупреждения и баны, чтобы пресекать злоупотребления."
+            " Имена, телефоны и тексты сообщений не сохраняются.\n\n"
+            "Всё это видит только автор и только для работы бота. Он никому"
+            " не показывает и не передаёт, что ты скачивал и что это был"
+            " ты, — кроме жалоб на незаконный контент в Telegram и случаев,"
+            " когда этого требует закон. Данные никому не продаются."
         ),
         "legal.terms": (
             "📜 <b>Правила</b>\n\n"
             "Бот бесплатный и работает «как есть», без гарантий. За ссылки"
-            " отвечаешь ты: кидай только то, что можно, ничего незаконного,"
-            " без спама. При /cleanup твой комментарий к ссылке публикуется"
-            " под видео."
+            " отвечаешь ты: кидай только то, что можно. Ничего"
+            " незаконного, никакого 18+, жести, ненависти и скама, без"
+            " спама. При /cleanup твой комментарий к ссылке публикуется под"
+            " видео.\n\n"
+            "За нарушение — предупреждение, после третьего бот перестаёт"
+            " для тебя работать. Предупреждения сгорают через 90 дней."
         ),
         "legal.contact": "\nВопросы, удаление данных или копий: {tg}",
         "menu.group.cleanup": "Что делать с сообщениями-ссылками (админы)",
@@ -678,24 +680,26 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "legal.privacy": (
             "🔒 <b>Privaatsus</b>\n\n"
-            "Bot hoiab ainult vajalikku: sinu Telegrami ID (harvade"
-            " teadaannete jaoks boti kohta) ja keele, kui seda muutsid,"
-            " gruppide ID-d ja seaded ning allalaaditud"
-            " videote koopiad koos linkidega privaatses kanalis, nädal aega"
-            " ka seda, kes iga video küsis, ning blokeeritud kasutajate"
-            " nimekirja, et kuritarvitust peatada. Nimesid,"
-            " telefoninumbreid ja sõnumite teksti ei salvestata.\n\n"
-            "Seda näeb ainult autor ja ainult boti tööks. Ta annab sõna, et"
-            " ei näita ega anna kellelegi edasi, mida sa alla laadisid ega"
-            " et see olid sina, välja arvatud teated ebaseaduslikust"
-            " sisust Telegramile. Andmeid ei müüda."
+            "Bot hoiab ainult vajalikku: sinu Telegrami ID ja keele,"
+            " gruppide ID-d ja seaded, allalaaditud videote koopiad koos"
+            " linkidega privaatses kanalis, nädal aega ka seda, kes iga"
+            " video küsis, ning hoiatused ja blokeeringud, et"
+            " kuritarvitust peatada. Nimesid, telefoninumbreid ja sõnumite"
+            " teksti ei salvestata.\n\n"
+            "Seda näeb ainult autor ja ainult boti tööks. Ta ei näita ega"
+            " anna kellelegi edasi, mida sa alla laadisid ega et see olid"
+            " sina, välja arvatud teated ebaseaduslikust sisust"
+            " Telegramile ja juhud, kui seadus seda nõuab. Andmeid ei müüda."
         ),
         "legal.terms": (
             "📜 <b>Kasutustingimused</b>\n\n"
             "Bot on tasuta ja töötab „nagu on“, ilma garantiideta. Saadetud"
-            " linkide eest vastutad sina: jaga ainult lubatut, mitte midagi"
-            " ebaseaduslikku, mitte rämpsposti. /cleanup puhul avaldatakse"
-            " sinu kommentaar video all."
+            " linkide eest vastutad sina: jaga ainult lubatut. Mitte midagi"
+            " ebaseaduslikku, 18+, vägivalda, vihakõnet ega pettusi, mitte"
+            " rämpsposti. /cleanup puhul avaldatakse sinu kommentaar video"
+            " all.\n\n"
+            "Rikkumise eest saad hoiatuse, kolmanda järel bot sinu jaoks"
+            " enam ei tööta. Hoiatused aeguvad 90 päeva pärast."
         ),
         "legal.contact": "\nKüsimused, andmete või koopiate kustutamine: {tg}",
         "menu.group.cleanup": "Mida teha linkidega sõnumitega (adminid)",

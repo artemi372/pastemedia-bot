@@ -77,7 +77,15 @@ def build_router(kit: "BotKit") -> Router:
         name = "legal.privacy_name" if privacy else "legal.terms_name"
         text = t(lang, "legal.privacy" if privacy else "legal.terms")
         if url:
-            text += t(lang, "legal.read", url=escape(url), name=t(lang, name))
+            # PRIVACY_URL / TERMS_URL are the English pages: say so when
+            # this language has no page of its own.
+            own = kit.cfg.privacy_urls if privacy else kit.cfg.terms_urls
+            key = (
+                "legal.read"
+                if lang == "en" or lang in own
+                else "legal.read_en"
+            )
+            text += t(lang, key, url=escape(url), name=t(lang, name))
         if kit.cfg.author_telegram:
             text += t(lang, "legal.contact", tg=f"@{kit.cfg.author_telegram}")
         await kit.reply(

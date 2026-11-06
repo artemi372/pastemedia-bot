@@ -19,6 +19,7 @@ KIT_TEXTS: dict[str, dict[str, str]] = {
         "legal.privacy_name": "Privacy Policy",
         "legal.links": "\n\n📄 {links}",
         "legal.read": '\n\nFull text: <a href="{url}">{name}</a>',
+        "legal.read_en": '\n\nFull text: <a href="{url}">{name}</a>',
         "legal.contact": "\nQuestions and data removal: {tg}",
         # ── author ──
         "author.line": "\n\n👤 Author: {contacts}",
@@ -108,7 +109,8 @@ KIT_TEXTS: dict[str, dict[str, str]] = {
         "legal.terms_name": "Правила",
         "legal.privacy_name": "Конфиденциальность",
         "legal.links": "\n\n📄 {links}",
-        "legal.read": (
+        "legal.read": '\n\nПолный текст: <a href="{url}">{name}</a>',
+        "legal.read_en": (
             '\n\nПолный текст (на английском): <a href="{url}">{name}</a>'
         ),
         "legal.contact": "\nВопросы и удаление данных: {tg}",
@@ -196,7 +198,8 @@ KIT_TEXTS: dict[str, dict[str, str]] = {
         "legal.terms_name": "Kasutustingimused",
         "legal.privacy_name": "Privaatsuspoliitika",
         "legal.links": "\n\n📄 {links}",
-        "legal.read": (
+        "legal.read": '\n\nTäistekst: <a href="{url}">{name}</a>',
+        "legal.read_en": (
             '\n\nTäistekst (inglise keeles): <a href="{url}">{name}</a>'
         ),
         "legal.contact": "\nKüsimused ja andmete kustutamine: {tg}",
