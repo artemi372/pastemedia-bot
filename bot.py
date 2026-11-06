@@ -145,6 +145,17 @@ WARN_RULES = (
 )
 # Links in the last hour that make /warn suggest "spam" first.
 SPAM_PER_HOUR = 20
+# Rate limits: (seconds, links). More than that and the next link
+# waits; nobody sends that many by hand, a flood or a script does.
+SPAM_LIMITS = ((60, 8), (600, 30), (3600, 80))
+# A burst of refused links ends after this much quiet.
+SPAM_BURST_GAP = 10 * 60
+# The first burst is only a "slow down"; another one within this time
+# is an automatic warning for spam.
+SPAM_STRIKE_WINDOW = 24 * 60 * 60
+# At most one automatic warning per user in this time, so one flood
+# can't add up to a ban on its own.
+AUTO_WARN_COOLDOWN = 24 * 60 * 60
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link: working on it, failed, a live
 # stream, an account instead of a video. Bots can use only Telegram's
@@ -157,6 +168,7 @@ REACTIONS = {
     "failed": "🤷",
     "live": "🙈",
     "profile": "🤨",
+    "slow": "🥱",
 }
 CUSTOM_REACTIONS = {
     kind: os.getenv(f"REACTION_{kind.upper()}_ID", "").strip()
@@ -290,6 +302,11 @@ user_jobs: dict[int, int] = {}
 # user id -> when they asked for media in the last hour (in memory):
 # /warn suggests "spam" for someone who floods the bot.
 user_requests: dict[int, list[float]] = {}
+# user id -> when their current burst of refused links started, and
+# when its last link was refused (in memory).
+spam_bursts: dict[int, list[float]] = {}
+# user id -> when their previous burst started (for the next strike).
+spam_strikes: dict[int, float] = {}
 # /warn panels already answered: (chat id, message id) -> True. Two
 # quick taps on one panel must not give two warnings.
 warn_panels_done: dict[tuple[int, int], bool] = {}
@@ -324,6 +341,20 @@ class DownloadTimeoutError(RuntimeError):
     """The download took longer than DOWNLOAD_TIMEOUT."""
 
 
+class SlowDownError(RuntimeError):
+    """The user sent more links than SPAM_LIMITS allow."""
+
+    def __init__(self, wait: float, first: bool):
+        """Remember the wait and whether it's the burst's first one.
+
+        Only the first refused link of a burst gets a message; the
+        rest only a reaction, or the bot would flood the chat back.
+        """
+        super().__init__(f"slow down for {wait:.0f} s")
+        self.wait = wait
+        self.first = first
+
+
 def cleanup_mode(chat_id: int) -> str:
     """Return the /cleanup mode of a group ("keep" by default)."""
     mode = db.get_setting(f"cleanup:{chat_id}", "keep")
@@ -354,6 +385,71 @@ def requests_last_hour(user_id: int) -> int:
     return sum(now - at < 3600 for at in user_requests.get(user_id, []))
 
 
+def spam_wait(user_id: int) -> float:
+    """Return how long a user must wait before the next link (0: ok).
+
+    For each SPAM_LIMITS window that is full, the wait lasts until
+    enough of its links grow older than the window.
+    """
+    now = time.time()
+    times = sorted(user_requests.get(user_id, []))
+    wait = 0.0
+    for seconds, limit in SPAM_LIMITS:
+        recent = [at for at in times if now - at < seconds]
+        if len(recent) >= limit:
+            wait = max(wait, recent[len(recent) - limit] + seconds - now)
+    return wait
+
+
+async def rate_limit(bot: Bot, user_id: int | None) -> None:
+    """Count a link, or refuse it if the user sends too many.
+
+    The first burst over the limits only asks to slow down. Another
+    burst within SPAM_STRIKE_WINDOW is an automatic warning for spam,
+    at most one per AUTO_WARN_COOLDOWN (so three of them, the ban,
+    take at least three separate days of flooding). Refused links
+    don't count, so waiting really helps. Developers have no limits.
+    """
+    if user_id is None or kit.is_dev(user_id):
+        note_request(user_id)
+        return
+    wait = spam_wait(user_id)
+    if not wait:
+        note_request(user_id)
+        return
+    now = time.time()
+    burst = spam_bursts.get(user_id)
+    first = burst is None or now - burst[1] > SPAM_BURST_GAP
+    if first:
+        previous = spam_strikes.get(user_id)
+        remember(spam_bursts, user_id, [now, now], RESOLVED_LIMIT)
+        remember(spam_strikes, user_id, now, RESOLVED_LIMIT)
+        if previous is not None and now - previous < SPAM_STRIKE_WINDOW:
+            await auto_warn(bot, user_id)
+    else:
+        burst[1] = now
+    raise SlowDownError(wait, first)
+
+
+async def auto_warn(bot: Bot, user_id: int) -> None:
+    """Warn a user for spam automatically and tell the author."""
+    key = f"autowarn:{user_id}"
+    last = float(db.get_setting(key, "0") or 0)
+    if time.time() - last < AUTO_WARN_COOLDOWN or ban_of(user_id):
+        return
+    db.set_setting(key, str(int(time.time())))
+    text = await give_warning(bot, user_id, "spam")
+    log.info("auto-warned %s for spam", user_id)
+    try:
+        await bot.send_message(
+            STORAGE_CHAT_ID,
+            t("en", "admin_auto_warned") + text,
+            disable_notification=True,
+        )
+    except Exception as e:
+        log.warning("couldn't report an auto warning: %s", e)
+
+
 # ---------- helpers ----------
 
 
@@ -368,6 +464,8 @@ def error_text(lang: str, e: Exception) -> str:
         return t(lang, "too_big")
     if isinstance(e, BusyError):
         return t(lang, "busy")
+    if isinstance(e, SlowDownError):
+        return t(lang, "slow_down", min=max(1, -(-int(e.wait) // 60)))
     if isinstance(e, OffsiteError):
         return t(lang, "failed")
     if isinstance(e, NotVideoError):
@@ -1418,7 +1516,7 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
     channel first, noting who requested it. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
-    note_request(user_id)
+    await rate_limit(bot, user_id)
     key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
@@ -1584,7 +1682,7 @@ async def get_album_items(
     channel first, noting who requested them. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
-    note_request(user_id)
+    await rate_limit(bot, user_id)
     key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
@@ -1667,13 +1765,25 @@ async def react(bot: Bot, msg: Message, kind: str | None):
 
 def failure_reaction(e: Exception) -> str:
     """Return the reaction for a failed link."""
+    if isinstance(e, SlowDownError):
+        return "slow"
     return e.kind if isinstance(e, NotVideoError) else "failed"
+
+
+def quiet_failure(e: Exception) -> bool:
+    """Tell whether a failure gets only a reaction, no message.
+
+    That's every refused link of a flood but the first one.
+    """
+    return isinstance(e, SlowDownError) and not e.first
 
 
 def log_failure(url: str, e: Exception) -> None:
     """Log a failed link: a stream or an account is no error at all."""
     if isinstance(e, NotVideoError):
         log.info("not a video (%s): %s", e.kind, url)
+    elif isinstance(e, SlowDownError):
+        log.info("too many links, %s: %s", e, url)
     else:
         log.error("download failed: %s", url, exc_info=e)
 
@@ -1860,6 +1970,10 @@ async def on_link(msg: Message, bot: Bot):
     except Exception as e:
         log_failure(url, e)
         await react(bot, msg, failure_reaction(e))
+        if quiet_failure(e):
+            with contextlib.suppress(Exception):
+                await status.delete()
+            return
         # In private chats the error stays, so the user can see what
         # happened with their link.
         await status.edit_text(error_text(lang, e))
@@ -2524,7 +2638,7 @@ async def on_group_link(msg: Message, bot: Bot):
         log_failure(url, e)
         # The original stays on failure, so the link isn't lost.
         await react(bot, msg, failure_reaction(e))
-        if not isinstance(e, NotVideoError):
+        if not isinstance(e, NotVideoError) and not quiet_failure(e):
             # A stream or an account only gets the reaction: in a
             # group nobody needs a message about it.
             kit.autodelete(await msg.reply(error_text(lang, e)), TTL_SHORT)

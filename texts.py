@@ -70,6 +70,9 @@ TEXTS: dict[str, dict[str, str]] = {
             "🤨 That's a link to an account, not to a video. Open the "
             "video itself and share its link."
         ),
+        "slow_down": (
+            "🥱 Too many links in a row. Wait {min} min and send it again."
+        ),
         "busy": (
             "⏳ You already have two downloads running. Wait for them to "
             "finish, then send the next link."
@@ -178,6 +181,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "✅ Took back a warning of <code>{id}</code>: {n}/{limit} now"
         ),
         "admin_warn_cancelled": "✖ Not warned",
+        "admin_auto_warned": "🤖 <b>Automatic, for flooding</b>\n",
         "admin_who": (
             "Whom? Reply to a stored video (requests are known for 7 days)"
             " or give a user id: <code>/ban 123456 reason</code>"
@@ -376,6 +380,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "not_video_profile": (
             "🤨 Это ссылка на аккаунт, а не на видео. Открой само видео "
             "и поделись его ссылкой."
+        ),
+        "slow_down": (
+            "🥱 Слишком много ссылок подряд. Подожди {min} мин."
+            " и пришли снова."
         ),
         "busy": (
             "⏳ У тебя уже скачиваются два видео. Дождись их и пришли "
@@ -600,6 +608,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "not_video_profile": (
             "🤨 See on konto link, mitte video oma. Ava video ise ja "
             "jaga selle linki."
+        ),
+        "slow_down": (
+            "🥱 Liiga palju linke järjest. Oota {min} min ja saada uuesti."
         ),
         "busy": (
             "⏳ Sul on juba kaks allalaadimist käimas. Oota need ära ja "
