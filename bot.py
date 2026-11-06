@@ -128,10 +128,21 @@ GROUP_TEXT_LIMIT = 200
 GROUP_URL_LIMIT = 2
 APPEAL_COOLDOWN = 24 * 60 * 60  # seconds between appeals of one user
 WARN_LIMIT = 3  # warnings that turn into a ban
-# Rules of the Terms of Use a /warn can name, in the order they are
-# offered when nothing points to one in particular. "other" is the
-# author's own words: /warn <id> <text>.
-WARN_RULES = ("copyright", "private", "spam", "comment", "illegal", "other")
+# What a /warn can be for: the most common kinds of bad content, most
+# common first (the order of the buttons when nothing points to one in
+# particular). "other" is the author's own words: /warn <id> <text>.
+WARN_RULES = (
+    "sexual",
+    "violence",
+    "hate",
+    "harassment",
+    "scam",
+    "illegal",
+    "copyright",
+    "private",
+    "spam",
+    "other",
+)
 # Links in the last hour that make /warn suggest "spam" first.
 SPAM_PER_HOUR = 20
 ALBUM_LIMIT = 10  # max photos in one Telegram album

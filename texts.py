@@ -102,13 +102,17 @@ TEXTS: dict[str, dict[str, str]] = {
             "❌ Your appeal was rejected. You can try again in 24 hours."
         ),
         "unbanned": "✅ You're unblocked, the bot works for you again.",
+        "rule.sexual": "Sexual or nude content",
+        "rule.violence": "Violence, gore or shock content",
+        "rule.hate": "Hate speech or extremism",
+        "rule.harassment": "Harassment, bullying or someone's private info",
+        "rule.scam": "Scams or fraud",
+        "rule.illegal": "Illegal content (drugs, weapons and the like)",
         "rule.copyright": "Sharing what you aren't allowed to repost",
         "rule.private": (
             "Content from private accounts or shared with you in confidence"
         ),
         "rule.spam": "Spam or flooding the bot with links",
-        "rule.comment": "An abusive comment next to a link",
-        "rule.illegal": "Illegal or harmful content",
         "rule.other": "Other",
         "warned": "⚠️ <b>Warning {n}/{limit}</b>\nRule: {rule}",
         "warned_note": "\nNote: {note}",
@@ -123,11 +127,15 @@ TEXTS: dict[str, dict[str, str]] = {
             "If you think it's a mistake, write /appeal and why, for example:"
             " <code>/appeal I sent the wrong link</code>"
         ),
+        "warn_btn.sexual": "🔞 Sexual",
+        "warn_btn.violence": "🩸 Violence",
+        "warn_btn.hate": "Hate",
+        "warn_btn.harassment": "Harassment",
+        "warn_btn.scam": "Scam",
+        "warn_btn.illegal": "Illegal",
         "warn_btn.copyright": "Copyright",
         "warn_btn.private": "Private",
         "warn_btn.spam": "Spam",
-        "warn_btn.comment": "Comment",
-        "warn_btn.illegal": "Illegal",
         "warn_why_before": "warned for it before (×{n})",
         "warn_why_spam": "{n} links in the last hour",
         "warn_why_blocked": "this post is blocked",
@@ -143,7 +151,8 @@ TEXTS: dict[str, dict[str, str]] = {
             "{hints}"
             "Pick the rule, or write your own:"
             " <code>/warn {id} text</code>\n"
-            "Illegal content: <code>/ban {id}</code> right away."
+            "Anything involving minors or seriously illegal:"
+            " <code>/ban {id}</code> right away and report it."
         ),
         "admin_warned": (
             "⚠️ Warned <code>{id}</code>: {rule} ({n}/{limit}). Take back:"
@@ -395,13 +404,17 @@ TEXTS: dict[str, dict[str, str]] = {
             "❌ Апелляцию отклонили. Попробовать снова можно через 24 часа."
         ),
         "unbanned": "✅ Ты разблокирован, бот снова работает для тебя.",
+        "rule.sexual": "Сексуальный или откровенный контент",
+        "rule.violence": "Насилие, жестокость или шок-контент",
+        "rule.hate": "Разжигание ненависти или экстремизм",
+        "rule.harassment": "Травля, оскорбления или чужие личные данные",
+        "rule.scam": "Мошенничество",
+        "rule.illegal": "Незаконный контент (наркотики, оружие и т. п.)",
         "rule.copyright": "Репост того, что нельзя распространять",
         "rule.private": (
             "Контент из закрытых аккаунтов или присланный тебе лично"
         ),
         "rule.spam": "Спам или флуд ссылками",
-        "rule.comment": "Оскорбительный комментарий к ссылке",
-        "rule.illegal": "Незаконный или вредный контент",
         "rule.other": "Другое",
         "warned": "⚠️ <b>Предупреждение {n}/{limit}</b>\nПравило: {rule}",
         "warned_note": "\nКомментарий: {note}",
@@ -620,6 +633,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "unbanned": (
             "✅ Blokeering on eemaldatud, bot töötab sinu jaoks jälle."
         ),
+        "rule.sexual": "Seksuaalne või alastust sisaldav sisu",
+        "rule.violence": "Vägivald, verine või šokeeriv sisu",
+        "rule.hate": "Vihakõne või äärmuslus",
+        "rule.harassment": "Kiusamine, solvamine või kellegi isikuandmed",
+        "rule.scam": "Pettus",
+        "rule.illegal": "Ebaseaduslik sisu (narkootikumid, relvad jms)",
         "rule.copyright": (
             "Sellise sisu jagamine, mida sul pole lubatud jagada"
         ),
@@ -627,8 +646,6 @@ TEXTS: dict[str, dict[str, str]] = {
             "Sisu privaatsetelt kontodelt või sulle usalduslikult saadetud"
         ),
         "rule.spam": "Spämm või botile linkide kuhjaga saatmine",
-        "rule.comment": "Solvav kommentaar lingi juures",
-        "rule.illegal": "Ebaseaduslik või kahjulik sisu",
         "rule.other": "Muu",
         "warned": "⚠️ <b>Hoiatus {n}/{limit}</b>\nReegel: {rule}",
         "warned_note": "\nMärkus: {note}",
