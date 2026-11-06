@@ -25,7 +25,6 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> without watermark (slideshows as albums)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b> Reels and posts (carousels as albums)\n"
-            "• <b>Facebook</b> Reels and videos\n"
             "\n"
             "<b>In any chat:</b> type <code>@{bot} </code>, paste a link and "
             "tap the result.\n"
@@ -42,8 +41,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "inline_title": "📥 Download video",
         "cached_title": "🎬 Video",
         "no_link": (
-            "Send me a link to TikTok, YouTube Shorts, Instagram or "
-            "Facebook Reels 🙂"
+            "Send me a link to TikTok, YouTube Shorts or Instagram Reels 🙂"
         ),
         "too_big": (
             "❌ The video is too big: Telegram lets bots send up to 50 MB,"
@@ -104,6 +102,70 @@ TEXTS: dict[str, dict[str, str]] = {
             "❌ Your appeal was rejected. You can try again in 24 hours."
         ),
         "unbanned": "✅ You're unblocked, the bot works for you again.",
+        "rule.copyright": "Sharing what you aren't allowed to repost",
+        "rule.private": (
+            "Content from private accounts or shared with you in confidence"
+        ),
+        "rule.spam": "Spam or flooding the bot with links",
+        "rule.comment": "An abusive comment next to a link",
+        "rule.illegal": "Illegal or harmful content",
+        "rule.other": "Other",
+        "warned": "⚠️ <b>Warning {n}/{limit}</b>\nRule: {rule}",
+        "warned_note": "\nNote: {note}",
+        "warned_tail": (
+            "\n\nAt {limit} warnings the bot stops working for you."
+            " The rules: /terms"
+        ),
+        "unwarned": "✅ A warning was taken back. Warnings now: {n}/{limit}.",
+        "banned_warnings": (
+            "🚫 You've been blocked from using this bot after {n} warnings."
+            "\nRules you broke:\n{rules}\n\n"
+            "If you think it's a mistake, write /appeal and why, for example:"
+            " <code>/appeal I sent the wrong link</code>"
+        ),
+        "warn_btn.copyright": "Copyright",
+        "warn_btn.private": "Private",
+        "warn_btn.spam": "Spam",
+        "warn_btn.comment": "Comment",
+        "warn_btn.illegal": "Illegal",
+        "warn_why_before": "warned for it before (×{n})",
+        "warn_why_spam": "{n} links in the last hour",
+        "warn_why_blocked": "this post is blocked",
+        "warn_hint": "💡 {rule}: {why}\n",
+        "admin_warn_who": (
+            "Whom? Reply to a stored video (requests are known for 7 days)"
+            " or give a user id: <code>/warn 123456</code>"
+        ),
+        "admin_warn_panel": (
+            "⚠️ <b>Warn</b> <code>{id}</code>, {n}/{limit} so far\n"
+            "{rules}\n"
+            "Post: <code>{post}</code>\n\n"
+            "{hints}"
+            "Pick the rule, or write your own:"
+            " <code>/warn {id} text</code>\n"
+            "Illegal content: <code>/ban {id}</code> right away."
+        ),
+        "admin_warned": (
+            "⚠️ Warned <code>{id}</code>: {rule} ({n}/{limit}). Take back:"
+            " <code>/unwarn {id}</code>"
+        ),
+        "admin_warn_ban": (
+            "🚫 <code>{id}</code> got warning {n} and is banned.\n{rules}\n"
+            "Lift with <code>/unban {id}</code>"
+        ),
+        "admin_warn_banned": "<code>{id}</code> is already banned",
+        "admin_warn_twice": (
+            "<code>{id}</code> already has this warning for this post"
+        ),
+        "admin_not_warned": "<code>{id}</code> has no warnings",
+        "admin_unwarn_banned": (
+            "<code>{id}</code> is banned for these warnings: lift with"
+            " <code>/unban {id}</code> (clears them too)"
+        ),
+        "admin_unwarned": (
+            "✅ Took back a warning of <code>{id}</code>: {n}/{limit} now"
+        ),
+        "admin_warn_cancelled": "✖ Not warned",
         "admin_who": (
             "Whom? Reply to a stored video (requests are known for 7 days)"
             " or give a user id: <code>/ban 123456 reason</code>"
@@ -124,7 +186,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "admin_unblocked": "✅ Unblocked <code>{post}</code>",
         "admin_not_blocked": "<code>{post}</code> isn't blocked",
         "admin_list": (
-            "<b>Banned users</b>\n{bans}\n\n<b>Blocked posts</b>\n{blocked}"
+            "<b>Banned users</b>\n{bans}\n\n"
+            "<b>Warned users</b>\n{warned}\n\n"
+            "<b>Blocked posts</b>\n{blocked}"
         ),
         "admin_appeal": (
             "📨 <b>Appeal</b> from {user} (<code>{id}</code>)\n"
@@ -200,12 +264,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok without watermark, Shorts, Instagram and Facebook "
-            "Reels: inline, in DMs and groups."
+            "TikTok without watermark, Shorts and Instagram Reels: "
+            "inline, in DMs and groups."
         ),
         "profile.full": (
             "📥 Short videos right in Telegram: TikTok without watermark, "
-            "YouTube Shorts, Instagram and Facebook Reels.\n"
+            "YouTube Shorts and Instagram Reels.\n"
             "\n"
             "• Any chat: type @{bot} and paste a link\n"
             "• Private chat: just send me a link\n"
@@ -214,8 +278,8 @@ TEXTS: dict[str, dict[str, str]] = {
             "🎞 TikTok slideshows come as photo albums."
         ),
         "group_hello": (
-            "👋 Hi! Post TikTok, YouTube Shorts, Instagram or Facebook Reels "
-            "links here and I'll reply with the video."
+            "👋 Hi! Post TikTok, YouTube Shorts or Instagram Reels links "
+            "here and I'll reply with the video."
         ),
         "group_need_access": (
             "\n"
@@ -243,8 +307,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "menu.bans": "Banned users and blocked posts",
         "help.dev_extra": (
             "\n"
-            "/ban, /unban, /block, /unblock, /bans — moderation (here or in "
-            "the storage channel)"
+            "/warn, /unwarn, /ban, /unban, /block, /unblock, /bans —"
+            " moderation (here or in the storage channel)"
         ),
     },
     "ru": {
@@ -253,7 +317,6 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> без вотермарки (слайд-шоу — альбомом)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b>: рилсы и посты (карусели — альбомом)\n"
-            "• <b>Facebook</b>: рилсы и видео\n"
             "\n"
             "<b>В любом чате:</b> напиши <code>@{bot} </code>, вставь ссылку "
             "и нажми на результат.\n"
@@ -271,7 +334,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "cached_title": "🎬 Видео",
         "no_link": (
             "Пришли мне ссылку на TikTok, YouTube Shorts или рилс из "
-            "Instagram или Facebook 🙂"
+            "Instagram 🙂"
         ),
         "too_big": (
             "❌ Видео слишком большое: Telegram даёт ботам отправлять до"
@@ -332,6 +395,27 @@ TEXTS: dict[str, dict[str, str]] = {
             "❌ Апелляцию отклонили. Попробовать снова можно через 24 часа."
         ),
         "unbanned": "✅ Ты разблокирован, бот снова работает для тебя.",
+        "rule.copyright": "Репост того, что нельзя распространять",
+        "rule.private": (
+            "Контент из закрытых аккаунтов или присланный тебе лично"
+        ),
+        "rule.spam": "Спам или флуд ссылками",
+        "rule.comment": "Оскорбительный комментарий к ссылке",
+        "rule.illegal": "Незаконный или вредный контент",
+        "rule.other": "Другое",
+        "warned": "⚠️ <b>Предупреждение {n}/{limit}</b>\nПравило: {rule}",
+        "warned_note": "\nКомментарий: {note}",
+        "warned_tail": (
+            "\n\nПосле {limit} предупреждений бот перестанет для тебя"
+            " работать. Правила: /terms"
+        ),
+        "unwarned": ("✅ Одно предупреждение снято. Сейчас: {n}/{limit}."),
+        "banned_warnings": (
+            "🚫 Тебе закрыт доступ к боту после {n} предупреждений."
+            "\nНарушенные правила:\n{rules}\n\n"
+            "Если это ошибка, напиши /appeal и почему, например:"
+            " <code>/appeal скинул не ту ссылку</code>"
+        ),
         "legal.privacy": (
             "🔒 <b>Конфиденциальность</b>\n\n"
             "Бот хранит только нужное для работы: твой Telegram ID (для"
@@ -398,12 +482,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok без вотермарки, Shorts, рилсы Instagram и Facebook: "
+            "TikTok без вотермарки, Shorts и рилсы Instagram: "
             "inline, в личке и в группах."
         ),
         "profile.full": (
             "📥 Короткие видео прямо в Telegram: TikTok без вотермарки, "
-            "YouTube Shorts, рилсы Instagram и Facebook.\n"
+            "YouTube Shorts и рилсы Instagram.\n"
             "\n"
             "• В любом чате: напиши @{bot} и вставь ссылку\n"
             "• В личке: просто пришли мне ссылку\n"
@@ -413,7 +497,7 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "group_hello": (
             "👋 Привет! Кидайте сюда ссылки на TikTok, YouTube Shorts или "
-            "рилсы из Instagram и Facebook, я отвечу видео."
+            "рилсы из Instagram, я отвечу видео."
         ),
         "group_need_access": (
             "\n"
@@ -442,8 +526,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "menu.bans": "Баны и заблокированные посты",
         "help.dev_extra": (
             "\n"
-            "/ban, /unban, /block, /unblock, /bans — модерация (здесь или в "
-            "канале-хранилище)"
+            "/warn, /unwarn, /ban, /unban, /block, /unblock, /bans —"
+            " модерация (здесь или в канале-хранилище)"
         ),
     },
     "et": {
@@ -452,7 +536,6 @@ TEXTS: dict[str, dict[str, str]] = {
             "• <b>TikTok</b> ilma vesimärgita (slaidiesitlused albumina)\n"
             "• <b>YouTube Shorts</b>\n"
             "• <b>Instagram</b> Reels ja postitused (karussellid albumina)\n"
-            "• <b>Facebook</b> Reels ja videod\n"
             "\n"
             "<b>Igas vestluses:</b> kirjuta <code>@{bot} </code>, kleebi link "
             "ja vajuta tulemusele.\n"
@@ -468,8 +551,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "inline_title": "📥 Laadi video alla",
         "cached_title": "🎬 Video",
         "no_link": (
-            "Saada mulle TikToki, YouTube Shortsi või Instagrami või "
-            "Facebooki Reelsi link 🙂"
+            "Saada mulle TikToki, YouTube Shortsi või Instagrami "
+            "Reelsi link 🙂"
         ),
         "too_big": (
             "❌ Video on liiga suur: Telegram lubab bottidel saata kuni"
@@ -537,6 +620,29 @@ TEXTS: dict[str, dict[str, str]] = {
         "unbanned": (
             "✅ Blokeering on eemaldatud, bot töötab sinu jaoks jälle."
         ),
+        "rule.copyright": (
+            "Sellise sisu jagamine, mida sul pole lubatud jagada"
+        ),
+        "rule.private": (
+            "Sisu privaatsetelt kontodelt või sulle usalduslikult saadetud"
+        ),
+        "rule.spam": "Spämm või botile linkide kuhjaga saatmine",
+        "rule.comment": "Solvav kommentaar lingi juures",
+        "rule.illegal": "Ebaseaduslik või kahjulik sisu",
+        "rule.other": "Muu",
+        "warned": "⚠️ <b>Hoiatus {n}/{limit}</b>\nReegel: {rule}",
+        "warned_note": "\nMärkus: {note}",
+        "warned_tail": (
+            "\n\n{limit} hoiatuse järel lõpetab bot sinu jaoks töötamise."
+            " Reeglid: /terms"
+        ),
+        "unwarned": "✅ Üks hoiatus on tühistatud. Praegu: {n}/{limit}.",
+        "banned_warnings": (
+            "🚫 Sinu ligipääs botile on {n} hoiatuse järel blokeeritud."
+            "\nRikutud reeglid:\n{rules}\n\n"
+            "Kui see on viga, kirjuta /appeal ja miks, näiteks:"
+            " <code>/appeal saatsin vale lingi</code>"
+        ),
         "legal.privacy": (
             "🔒 <b>Privaatsus</b>\n\n"
             "Bot hoiab ainult vajalikku: sinu Telegrami ID (harvade"
@@ -600,12 +706,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "link_line": "🔗 {link}",
         "comment_line": "💬 {text}",
         "profile.short": (
-            "TikTok ilma vesimärgita, Shorts, Instagrami ja Facebooki "
-            "Reels: inline, privaatselt ja grupis."
+            "TikTok ilma vesimärgita, Shorts ja Instagrami Reels: "
+            "inline, privaatselt ja grupis."
         ),
         "profile.full": (
             "📥 Lühivideod otse Telegramis: TikTok ilma vesimärgita, YouTube "
-            "Shorts, Instagrami ja Facebooki Reels.\n"
+            "Shorts ja Instagrami Reels.\n"
             "\n"
             "• Igas vestluses: kirjuta @{bot} ja kleebi link\n"
             "• Privaatselt: saada mulle lihtsalt link\n"
@@ -614,8 +720,8 @@ TEXTS: dict[str, dict[str, str]] = {
             "🎞 TikToki slaidiesitlused saadan fotoalbumina."
         ),
         "group_hello": (
-            "👋 Tere! Saatke siia TikToki, YouTube Shortsi või Instagrami ja "
-            "Facebooki Reelsi linke ja ma vastan videoga."
+            "👋 Tere! Saatke siia TikToki, YouTube Shortsi või Instagrami "
+            "Reelsi linke ja ma vastan videoga."
         ),
         "group_need_access": (
             "\n"
@@ -644,8 +750,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "menu.bans": "Blokeeritud kasutajad ja postitused",
         "help.dev_extra": (
             "\n"
-            "/ban, /unban, /block, /unblock, /bans — modereerimine (siin "
-            "või salvestuskanalis)"
+            "/warn, /unwarn, /ban, /unban, /block, /unblock, /bans —"
+            " modereerimine (siin või salvestuskanalis)"
         ),
     },
 }

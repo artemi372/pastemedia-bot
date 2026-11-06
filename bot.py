@@ -81,6 +81,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from botkit import (
+    TTL_LONG,
     TTL_MEDIUM,
     TTL_SHORT,
     BotKit,
@@ -126,6 +127,13 @@ COMPRESS_TIMEOUT = 300  # seconds for one ffmpeg run
 GROUP_TEXT_LIMIT = 200
 GROUP_URL_LIMIT = 2
 APPEAL_COOLDOWN = 24 * 60 * 60  # seconds between appeals of one user
+WARN_LIMIT = 3  # warnings that turn into a ban
+# Rules of the Terms of Use a /warn can name, in the order they are
+# offered when nothing points to one in particular. "other" is the
+# author's own words: /warn <id> <text>.
+WARN_RULES = ("copyright", "private", "spam", "comment", "illegal", "other")
+# Links in the last hour that make /warn suggest "spam" first.
+SPAM_PER_HOUR = 20
 ALBUM_LIMIT = 10  # max photos in one Telegram album
 # Reactions on the message with a link: working on it, failed, a live
 # stream, an account instead of a video. Bots can use only Telegram's
@@ -193,14 +201,6 @@ PLATFORM_PATTERNS = {
         r"https?://(?:www\.)?instagram\.com/"
         r"(?:[\w.]+/)?(?:reels?|p)/[\w-]+\S*"
     ),
-    # Reels, videos and the share links to them (fb.watch, /share/r/,
-    # /share/v/), which are followed to the post first.
-    "facebook": (
-        r"https?://(?:(?:www|m|web)\.)?facebook\.com/"
-        r"(?:reel/\d+|share/[rv]/[\w-]+|watch/?\?\S*?\bv=\d+"
-        r"|[\w.-]+/videos/(?:[\w.-]+/)?\d+)\S*"
-        r"|https?://(?:www\.)?fb\.watch/[\w-]+\S*"
-    ),
 }
 # The site of each platform: a short link must lead there, and links to
 # it that aren't videos (live streams, accounts) are recognised.
@@ -208,11 +208,9 @@ PLATFORM_HOSTS = {
     "tiktok": "tiktok.com",
     "youtube": "youtube.com",
     "instagram": "instagram.com",
-    "facebook": "facebook.com",
 }
 PLATFORM_HOMES = {
     "tiktok": "https://www.tiktok.com/",
-    "facebook": "https://www.facebook.com/",
 }
 # Any link to one of these sites (to find live streams and accounts).
 PLATFORM_URL_RE = re.compile(
@@ -242,7 +240,7 @@ router = Router()
 # data, kept in data/ and out of git.
 db = Storage()
 # Owner commands, also usable in the storage channel.
-ADMIN_COMMANDS = ("ban", "unban", "block", "unblock", "bans")
+ADMIN_COMMANDS = ("ban", "unban", "warn", "unwarn", "block", "unblock", "bans")
 kit = BotKit(
     cfg,
     db,
@@ -278,6 +276,12 @@ compress_pool = ThreadPoolExecutor(1, "compress")
 download_slots = asyncio.Semaphore(DOWNLOAD_WORKERS)
 # user id -> links of theirs being downloaded right now.
 user_jobs: dict[int, int] = {}
+# user id -> when they asked for media in the last hour (in memory):
+# /warn suggests "spam" for someone who floods the bot.
+user_requests: dict[int, list[float]] = {}
+# /warn panels already answered: (chat id, message id) -> True. Two
+# quick taps on one panel must not give two warnings.
+warn_panels_done: dict[tuple[int, int], bool] = {}
 
 
 class TooBigError(RuntimeError):
@@ -318,6 +322,25 @@ def cleanup_mode(chat_id: int) -> str:
 def ban_of(user: User | int | None) -> dict | None:
     """Return the ban of a user, or None if they aren't banned."""
     return db.ban_of(user.id if isinstance(user, User) else user)
+
+
+def note_request(user_id: int | None) -> None:
+    """Count a request for media, cached or not (for /warn)."""
+    if user_id is None:
+        return
+    now = time.time()
+    recent = [at for at in user_requests.pop(user_id, []) if now - at < 3600]
+    recent.append(now)
+    # Re-inserted at the end, so the first users are the least active.
+    user_requests[user_id] = recent
+    while len(user_requests) > RESOLVED_LIMIT:
+        user_requests.pop(next(iter(user_requests)))
+
+
+def requests_last_hour(user_id: int) -> int:
+    """Return how many links a user sent in the last hour."""
+    now = time.time()
+    return sum(now - at < 3600 for at in user_requests.get(user_id, []))
 
 
 # ---------- helpers ----------
@@ -565,8 +588,7 @@ def _pick_clean_format(info: dict) -> dict:
 def _http(platform: str = "tiktok") -> httpx.Client:
     """Create an HTTP client that looks like a regular browser.
 
-    cookies/<platform>.txt, if present, is sent too: Facebook shows
-    share links to logged-in viewers only.
+    cookies/<platform>.txt, if present, is sent too.
     """
     cookies = None
     cookiefile = cookies_for(platform)
@@ -604,18 +626,10 @@ def on_platform(url: str, platform: str) -> bool:
 def post_id(platform: str, url: str) -> str | None:
     """Return the id of the post a link points to, or None.
 
-    Only the path counts (and Facebook's ?v=): "?x=/video/<id>" in a
-    query must not pick the id.
+    Only the path counts: "?x=/video/<id>" in a query must not pick
+    the id.
     """
     parts = urlsplit(url)
-    if platform == "facebook":
-        m = re.search(r"/(?:reel|videos)/(\d+)", parts.path)
-        if m:
-            return m.group(1)
-        if re.fullmatch(r"/watch/?", parts.path):
-            m = re.search(r"(?:^|&)v=(\d+)", parts.query)
-            return m.group(1) if m else None
-        return None
     m = re.search(r"/(?:video|photo|shorts|reels?|p)/([\w-]+)", parts.path)
     return m.group(1) if m else None
 
@@ -623,8 +637,8 @@ def post_id(platform: str, url: str) -> str | None:
 def is_direct(url: str) -> bool:
     """Tell whether a link already names its post, without redirects.
 
-    TikTok and Facebook short and share links only show where they lead
-    after following them; such a link needs the network for its key.
+    TikTok short links only show where they lead after following
+    them; such a link needs the network for its key.
     """
     platform = platform_of(url)
     if platform == "tiktok":
@@ -636,23 +650,17 @@ def is_direct(url: str) -> bool:
         ) and bool(
             re.fullmatch(r"/@[\w.-]+/(?:video|photo)/\d+/?", parts.path)
         )
-    if platform == "facebook":
-        return (
-            on_platform(url, "facebook")
-            and post_id("facebook", url) is not None
-        )
     return True
 
 
 def resolve_url(url: str) -> str:
-    """Follow a short or share link to the post it leads to.
+    """Follow a short link to the post it leads to.
 
-    TikTok (vm.tiktok.com, tt.site, /t/) and Facebook (fb.watch,
-    /share/) links. The link must end up on the platform's own site:
-    otherwise whatever site it leads to would be downloaded and cached
-    as that post, for everyone who sends the real one later. A link
-    that turns out to be a live stream or an account raises
-    NotVideoError.
+    TikTok links (vm.tiktok.com, tt.site, /t/). The link must end up
+    on the platform's own site: otherwise whatever site it leads to
+    would be downloaded and cached as that post, for everyone who
+    sends the real one later. A link that turns out to be a live
+    stream or an account raises NotVideoError.
     """
     if url not in resolved:
         platform = platform_of(url)
@@ -692,43 +700,6 @@ NOT_ACCOUNTS = {
         "directory",
         "emails",
         "session",
-    },
-    "facebook": {
-        "reel",
-        "reels",
-        "share",
-        "watch",
-        "groups",
-        "events",
-        "gaming",
-        "marketplace",
-        "login",
-        "login.php",
-        "help",
-        "photo",
-        "photo.php",
-        "story.php",
-        "permalink.php",
-        "pages",
-        "stories",
-        "videos",
-        "hashtag",
-        "search",
-        "ads",
-        "business",
-        "policies",
-        "privacy",
-        "settings",
-        "notifications",
-        "messages",
-        "friends",
-        "bookmarks",
-        "plugins",
-        "sharer",
-        "sharer.php",
-        "dialog",
-        "l.php",
-        "flx",
     },
 }
 
@@ -785,16 +756,7 @@ def not_video_kind(url: str) -> str | None:
         if rest[:1] == ["live"]:
             return "live"
         return "profile" if not rest else None
-    # Facebook
-    if first == "watch" and "live" in rest:
-        return "live"
-    if first == "profile.php" or first == "people":
-        return "profile"
-    if first in NOT_ACCOUNTS["facebook"]:
-        return None
-    if rest[:1] == ["live"] or rest[:2] == ["videos", "live"]:
-        return "live"
-    return "profile" if not rest else None
+    return None
 
 
 def find_not_video(text: str | None) -> tuple[str, str] | None:
@@ -856,7 +818,7 @@ def media_key(url: str) -> str:
 async def offload(func: Callable[[str], Any], url: str) -> Any:
     """Run media_key or is_album without blocking the bot.
 
-    Only an unresolved short or share link (and a TikTok album check)
+    Only an unresolved short link (and a TikTok album check)
     needs the network; everything else is answered right here. The
     network case runs in asyncio's own threads, which downloads never
     use.
@@ -1232,11 +1194,6 @@ def download(url: str, outdir: str) -> tuple[str, dict]:
         return download_instagram_single(url, outdir)
     if platform == "instagram":
         return download_instagram_reel(url, outdir)
-    if platform == "facebook" and not is_direct(url):
-        # yt-dlp doesn't know share links: follow them to the post.
-        url = resolve_url(url)
-        if post_id("facebook", url) is None:
-            raise RuntimeError(f"Facebook didn't open {url} (cookies?)")
     return download_generic(url, outdir, platform)
 
 
@@ -1271,7 +1228,7 @@ def no_live(info: dict, *, incomplete: bool = False) -> None:
 
 
 def generic_opts(outdir: str, platform: str) -> dict:
-    """Return yt-dlp options for Shorts, Reels and Facebook videos."""
+    """Return yt-dlp options for YouTube Shorts and Instagram Reels."""
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -1297,7 +1254,7 @@ def generic_opts(outdir: str, platform: str) -> dict:
         # compress.
         "max_filesize": MAX_SOURCE_BYTES,
         # Never the "generic" extractor, which downloads from any site:
-        # only YouTube, Instagram and Facebook links get here.
+        # only YouTube and Instagram links get here.
         "allowed_extractors": ["default", "-generic"],
         "match_filter": no_live,
     }
@@ -1308,7 +1265,7 @@ def generic_opts(outdir: str, platform: str) -> dict:
 
 
 def download_generic(url: str, outdir: str, platform: str) -> tuple[str, dict]:
-    """Download a YouTube Short, an Instagram Reel or a Facebook video.
+    """Download a YouTube Short or an Instagram Reel.
 
     Take the best H.264 mp4 up to 1080p, merged with the audio track.
     """
@@ -1450,6 +1407,7 @@ async def get_file_id(bot: Bot, url: str, user_id: int | None = None) -> str:
     channel first, noting who requested it. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
+    note_request(user_id)
     key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
@@ -1615,6 +1573,7 @@ async def get_album_items(
     channel first, noting who requested them. Different links to one
     post share the cache entry. Blocked posts raise BlockedError.
     """
+    note_request(user_id)
     key = await offload(media_key, url)
     if db.is_blocked(key):
         raise BlockedError(key)
@@ -1858,6 +1817,14 @@ def ban_text(lang: str, ban: dict) -> str:
     """Explain a ban to the banned user, with how to appeal."""
     if ban.get("kind") == "request":
         return t(lang, "banned_request")
+    if ban.get("kind") == "warnings":
+        warns = db.warnings(ban["user_id"])
+        return t(
+            lang,
+            "banned_warnings",
+            n=len(warns),
+            rules=broken_rules(lang, warns),
+        )
     reason = html.escape(ban.get("reason") or t(lang, "no_reason"))
     return t(lang, "banned_abuse", reason=reason)
 
@@ -1986,22 +1953,236 @@ def ban_target(args: list[str], replied: Message | None) -> int | None:
     return None
 
 
-async def notify(bot: Bot, user_id: int, key: str, **kwargs):
-    """Message a user in their language (they may block the bot).
+def user_lang(user_id: int) -> str:
+    """Return the language to message a user in.
 
-    The language is the user's /language choice, or the one seen when
-    they last ran into the ban.
+    The user's /language choice, or the one seen when they last ran
+    into the ban.
     """
     row = db.chat(user_id)
-    lang = (
+    return (
         (row["lang"] if row else None)
         or (ban_of(user_id) or {}).get("lang")
         or lang_of(user_id)
     )
+
+
+async def send_to(bot: Bot, user_id: int, text: str):
+    """Message a user; they may have blocked the bot."""
     try:
-        await bot.send_message(user_id, t(lang, key, **kwargs))
+        await bot.send_message(user_id, text)
     except Exception as e:
         log.info("couldn't notify %s: %s", user_id, e)
+
+
+async def notify(bot: Bot, user_id: int, key: str, **kwargs):
+    """Message a user a text in their language."""
+    await send_to(bot, user_id, t(user_lang(user_id), key, **kwargs))
+
+
+# ---------- developers: warnings ----------
+
+
+def broken_rules(lang: str, warns: list[dict]) -> str:
+    """List every rule in a user's warnings, one line each.
+
+    A rule broken twice is one line with "×2"; "other" warnings are
+    the author's own words, so each one gets its own line.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    for w in warns:
+        note = (w.get("note") or "").strip()
+        key = (w["rule"], note if w["rule"] == "other" else "")
+        counts[key] = counts.get(key, 0) + 1
+    lines = []
+    for (rule, note), n in counts.items():
+        line = "• " + t(lang, f"rule.{rule}")
+        if note:
+            line += ": " + html.escape(note)
+        if n > 1:
+            line += f" (×{n})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def suggest_rules(
+    user_id: int, key: str | None
+) -> list[tuple[str, str | None]]:
+    """Rank the rules a /warn may be about, most likely first.
+
+    The bot can't see what's in a video, so it goes by what it knows:
+    rules the user was already warned for, how many links they sent
+    in the last hour, and whether the post is blocked (that's done for
+    takedowns and illegal content). Each rule comes with the reason it
+    was suggested, or None. "other" isn't a button (it needs text).
+    """
+    score = {
+        rule: -i / 10 for i, rule in enumerate(WARN_RULES) if rule != "other"
+    }
+    why: dict[str, list[str]] = {rule: [] for rule in score}
+    before: dict[str, int] = {}
+    for w in db.warnings(user_id):
+        before[w["rule"]] = before.get(w["rule"], 0) + 1
+    for rule, n in before.items():
+        if rule in score:
+            score[rule] += 2
+            why[rule].append(t("en", "warn_why_before", n=n))
+    sent = requests_last_hour(user_id)
+    if sent >= SPAM_PER_HOUR:
+        score["spam"] += 3
+        why["spam"].append(t("en", "warn_why_spam", n=sent))
+    if key and db.is_blocked(key):
+        score["copyright"] += 2
+        score["illegal"] += 1
+        why["copyright"].append(t("en", "warn_why_blocked"))
+    ranked = sorted(score, key=score.get, reverse=True)
+    return [(rule, "; ".join(why[rule]) or None) for rule in ranked]
+
+
+def warn_keyboard(
+    user_id: int, message_id: int, ranked: list[tuple[str, str | None]]
+) -> InlineKeyboardMarkup:
+    """Build the rule buttons of a /warn panel (💡 = suggested)."""
+    buttons = [
+        InlineKeyboardButton(
+            text=("💡 " if hint else "") + t("en", f"warn_btn.{rule}"),
+            callback_data=f"warn:{rule}:{user_id}:{message_id}",
+        )
+        for rule, hint in ranked
+    ]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✖ Cancel",
+                callback_data=f"warn:cancel:{user_id}:{message_id}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def warn_panel(
+    user_id: int, replied: Message | None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Show the rules to warn a user for, the likely ones first."""
+    if ban_of(user_id):
+        return t("en", "admin_warn_banned", id=user_id), None
+    link = find_link(replied.caption) if replied is not None else ""
+    key = None
+    if link:
+        with contextlib.suppress(Exception):
+            key = await offload(media_key, link)
+    ranked = suggest_rules(user_id, key)
+    warns = db.warnings(user_id)
+    hints = "".join(
+        t("en", "warn_hint", rule=t("en", f"rule.{rule}"), why=why)
+        for rule, why in ranked
+        if why
+    )
+    text = t(
+        "en",
+        "admin_warn_panel",
+        id=user_id,
+        n=len(warns),
+        limit=WARN_LIMIT,
+        rules=broken_rules("en", warns) or "-",
+        post=html.escape(key or link or "-"),
+        hints=hints,
+    )
+    message_id = replied.message_id if replied is not None else 0
+    return text, warn_keyboard(user_id, message_id, ranked)
+
+
+async def give_warning(
+    bot: Bot, user_id: int, rule: str, note: str = "", message_id: int = 0
+) -> str:
+    """Warn a user and tell them; ban them at WARN_LIMIT warnings.
+
+    The ban message lists every rule from all of their warnings.
+    Return the answer for the author (English, HTML).
+    """
+    if ban_of(user_id):
+        return t("en", "admin_warn_banned", id=user_id)
+    if not db.add_warning(user_id, rule, note, message_id):
+        return t("en", "admin_warn_twice", id=user_id)
+    warns = db.warnings(user_id)
+    lang = user_lang(user_id)
+    if len(warns) < WARN_LIMIT:
+        text = t(
+            lang,
+            "warned",
+            n=len(warns),
+            limit=WARN_LIMIT,
+            rule=t(lang, f"rule.{rule}"),
+        )
+        if note:
+            text += t(lang, "warned_note", note=html.escape(note))
+        await send_to(
+            bot, user_id, text + t(lang, "warned_tail", limit=WARN_LIMIT)
+        )
+        return t(
+            "en",
+            "admin_warned",
+            id=user_id,
+            n=len(warns),
+            limit=WARN_LIMIT,
+            rule=t("en", f"rule.{rule}")
+            + (": " + html.escape(note) if note else ""),
+        )
+    rules = broken_rules("en", warns)
+    # The reason is for the author (/bans, appeals); the user gets
+    # the rules in their own language from the warnings themselves.
+    db.ban(user_id, f"{len(warns)} warnings:\n{rules}", "warnings")
+    db.update_ban(user_id, lang=lang)
+    await send_to(
+        bot,
+        user_id,
+        t(
+            lang,
+            "banned_warnings",
+            n=len(warns),
+            rules=broken_rules(lang, warns),
+        ),
+    )
+    return t("en", "admin_warn_ban", id=user_id, n=len(warns), rules=rules)
+
+
+async def warn_command(
+    bot: Bot, cmd: str, args: list[str], replied: Message | None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Run /warn or /unwarn; return the answer and its buttons.
+
+    /warn <id|reply>: show the rules to pick from, likely ones first.
+    /warn <id|reply> <rule> [note]: warn for that rule right away.
+    /warn <id|reply> <text>: warn in your own words ("other").
+    /unwarn <id|reply>: take back the latest warning.
+    """
+    user_id = ban_target(args, replied)
+    if user_id is None:
+        return t("en", "admin_warn_who"), None
+    if cmd == "unwarn":
+        if ban_of(user_id):
+            # The ban message lists these warnings: /unban instead.
+            return t("en", "admin_unwarn_banned", id=user_id), None
+        dropped = db.drop_last_warning(user_id)
+        if dropped is None:
+            return t("en", "admin_not_warned", id=user_id), None
+        n = len(db.warnings(user_id))
+        await notify(bot, user_id, "unwarned", n=n, limit=WARN_LIMIT)
+        return (
+            t("en", "admin_unwarned", id=user_id, n=n, limit=WARN_LIMIT),
+            None,
+        )
+    message_id = replied.message_id if replied is not None else 0
+    if not args:
+        return await warn_panel(user_id, replied)
+    rule = args[0].lower()
+    if rule in WARN_RULES:
+        note = " ".join(args[1:])
+    else:
+        rule, note = "other", " ".join(args)
+    return await give_warning(bot, user_id, rule, note, message_id), None
 
 
 async def admin_command(
@@ -2067,12 +2248,27 @@ async def admin_command(
         f"{html.escape(b.get('reason') or '-')}"
         for b in db.blocked()
     ]
+    warned = [
+        f"<code>{w['user_id']}</code> {w['count']}/{WARN_LIMIT}"
+        for w in db.warned()
+        if not ban_of(w["user_id"])
+    ]
     return t(
         "en",
         "admin_list",
         bans="\n".join(bans) or "-",
+        warned="\n".join(warned) or "-",
         blocked="\n".join(blocked) or "-",
     )
+
+
+async def moderate(
+    bot: Bot, cmd: str, args: list[str], replied: Message | None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Run any moderation command; return the answer and buttons."""
+    if cmd in ("warn", "unwarn"):
+        return await warn_command(bot, cmd, args, replied)
+    return await admin_command(bot, cmd, args, replied), None
 
 
 @router.channel_post(F.chat.id == STORAGE_CHAT_ID, Command(*ADMIN_COMMANDS))
@@ -2085,16 +2281,19 @@ async def on_storage_command(msg: Message, bot: Bot, command: CommandObject):
     minute, to keep the channel clean.
     """
     args = (command.args or "").split()
-    text = await admin_command(
+    text, kb = await moderate(
         bot, command.command.lower(), args, msg.reply_to_message
     )
     answer = await bot.send_message(
         STORAGE_CHAT_ID,
         text,
+        reply_markup=kb,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
+    # A /warn panel waits for a button, so it stays a bit longer.
+    ttl = TTL_LONG if kb else TTL_MEDIUM
     for message in (msg, answer):
-        kit.autodelete(message, TTL_MEDIUM, force=True)
+        kit.autodelete(message, ttl, force=True)
 
 
 @router.message(
@@ -2103,10 +2302,60 @@ async def on_storage_command(msg: Message, bot: Bot, command: CommandObject):
 async def on_dev_admin(msg: Message, bot: Bot, command: CommandObject):
     """Run a moderation command sent in private chat (developers)."""
     args = (command.args or "").split()
+    text, kb = await moderate(bot, command.command.lower(), args, None)
     await msg.answer(
-        await admin_command(bot, command.command.lower(), args, None),
+        text,
+        reply_markup=kb,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
+
+
+def can_moderate(c: CallbackQuery) -> bool:
+    """Tell whether whoever pressed a moderation button may do it.
+
+    Developers, or, if DEV_IDS isn't set, the storage channel's admins
+    (only they see its messages).
+    """
+    in_storage = (
+        isinstance(c.message, Message) and c.message.chat.id == STORAGE_CHAT_ID
+    )
+    return kit.is_dev(c.from_user) or (not cfg.dev_ids and in_storage)
+
+
+@router.callback_query(F.data.startswith("warn:"))
+async def on_warn_chosen(c: CallbackQuery, bot: Bot):
+    """Warn for the rule picked on a /warn panel, or cancel."""
+    if not can_moderate(c):
+        await c.answer()
+        return
+    parts = (c.data or "").split(":")
+    if (
+        len(parts) != 4
+        or not parts[2].lstrip("-").isdigit()
+        or not parts[3].isdigit()
+    ):
+        await c.answer()
+        return
+    _, rule, raw_id, raw_msg = parts
+    if isinstance(c.message, Message):
+        panel = (c.message.chat.id, c.message.message_id)
+        if panel in warn_panels_done:
+            await c.answer()
+            return
+        remember(warn_panels_done, panel, True, RESOLVED_LIMIT)
+    if rule == "cancel":
+        text = t("en", "admin_warn_cancelled")
+    elif rule in WARN_RULES:
+        text = await give_warning(bot, int(raw_id), rule, "", int(raw_msg))
+    else:
+        await c.answer()
+        return
+    if isinstance(c.message, Message):
+        with contextlib.suppress(TelegramBadRequest):
+            await c.message.edit_text(
+                text, link_preview_options=LinkPreviewOptions(is_disabled=True)
+            )
+    await c.answer()
 
 
 def appeal_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -2172,10 +2421,7 @@ async def on_appeal(msg: Message, bot: Bot, command: CommandObject):
 @router.callback_query(F.data.startswith("appeal:"))
 async def on_appeal_decided(c: CallbackQuery, bot: Bot):
     """Unban or reject when a developer answers an appeal."""
-    in_storage = (
-        isinstance(c.message, Message) and c.message.chat.id == STORAGE_CHAT_ID
-    )
-    if not kit.is_dev(c.from_user) and not (not cfg.dev_ids and in_storage):
+    if not can_moderate(c):
         await c.answer()
         return
     _, decision, raw_id = (c.data or "::").split(":", 2)

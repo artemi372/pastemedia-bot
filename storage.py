@@ -12,6 +12,7 @@ from botkit's KitStore. The bot's own tables:
 4. blocked: posts the bot won't download.
 5. uploads: who requested each stored video (for a week), so the
    author can ban whoever downloads forbidden content.
+6. warnings: rules a user broke (/warn); WARN_LIMIT of them is a ban.
 
 Before botkit this lived in state.json and media_cache.json; they are
 imported once and kept as *.imported.
@@ -70,6 +71,15 @@ CREATE TABLE IF NOT EXISTS uploads (
     user_id    INTEGER,
     at         INTEGER
 );
+CREATE TABLE IF NOT EXISTS warnings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER,
+    rule       TEXT,              -- a key of WARN_RULES in bot.py
+    note       TEXT,              -- the author's own words, if any
+    message_id INTEGER,           -- the stored media, 0 if none
+    at         INTEGER
+);
+CREATE INDEX IF NOT EXISTS warnings_user ON warnings (user_id);
 """
 
 
@@ -183,8 +193,13 @@ class Storage(KitStore):
         self.db.commit()
 
     def unban(self, user_id: int) -> bool:
-        """Lift a ban; tell whether the user was banned."""
+        """Lift a ban; tell whether the user was banned.
+
+        The user's warnings go too: an unbanned user starts again from
+        zero, not one warning away from the next ban.
+        """
         cur = self.db.execute("DELETE FROM bans WHERE user_id=?", (user_id,))
+        self.db.execute("DELETE FROM warnings WHERE user_id=?", (user_id,))
         self.db.commit()
         return cur.rowcount > 0
 
@@ -192,6 +207,61 @@ class Storage(KitStore):
         """Return the latest bans."""
         rows = self.db.execute(
             "SELECT * FROM bans ORDER BY at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Warnings ──
+    def add_warning(
+        self, user_id: int, rule: str, note: str = "", message_id: int = 0
+    ) -> bool:
+        """Warn a user; tell whether it is a new warning.
+
+        The same rule for the same stored media counts once, so a
+        double tap on a button doesn't warn twice.
+        """
+        if (
+            message_id
+            and self.db.execute(
+                "SELECT 1 FROM warnings "
+                "WHERE user_id=? AND rule=? AND message_id=?",
+                (user_id, rule, message_id),
+            ).fetchone()
+        ):
+            return False
+        self.db.execute(
+            "INSERT INTO warnings (user_id, rule, note, message_id, at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, rule, note, message_id, int(time.time())),
+        )
+        self.db.commit()
+        return True
+
+    def warnings(self, user_id: int) -> list[dict]:
+        """Return a user's warnings, oldest first."""
+        rows = self.db.execute(
+            "SELECT * FROM warnings WHERE user_id=? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def drop_last_warning(self, user_id: int) -> dict | None:
+        """Take back a user's latest warning and return it."""
+        row = self.db.execute(
+            "SELECT * FROM warnings WHERE user_id=? ORDER BY id DESC",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self.db.execute("DELETE FROM warnings WHERE id=?", (row["id"],))
+        self.db.commit()
+        return dict(row)
+
+    def warned(self, limit: int = 50) -> list[dict]:
+        """Return users with warnings: user_id, count, last warning."""
+        rows = self.db.execute(
+            "SELECT user_id, COUNT(*) AS count, MAX(at) AS at "
+            "FROM warnings GROUP BY user_id ORDER BY at DESC LIMIT ?",
+            (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
 

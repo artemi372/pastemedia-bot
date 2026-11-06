@@ -53,6 +53,30 @@ def test_bans(tmp_path):
     assert db.unblock("tiktok:1") and not db.is_blocked("tiktok:1")
 
 
+def test_warnings(tmp_path):
+    """Warnings add up, can be taken back and go away on unban."""
+    db = Storage(tmp_path / "bot.db")
+    assert db.add_warning(42, "spam", message_id=7)
+    # The same rule for the same media is one warning, not two.
+    assert not db.add_warning(42, "spam", message_id=7)
+    assert db.add_warning(42, "copyright", message_id=7)
+    assert db.add_warning(42, "other", "rude comment")
+    assert [w["rule"] for w in db.warnings(42)] == [
+        "spam",
+        "copyright",
+        "other",
+    ]
+    assert db.warned()[0]["count"] == 3
+    assert db.drop_last_warning(42)["note"] == "rude comment"
+    assert len(db.warnings(42)) == 2
+    db.ban(42, "warnings", "warnings")
+    # Warnings stay while banned (the ban message lists them)...
+    assert len(db.warnings(42)) == 2
+    db.unban(42)
+    # ...and an unbanned user starts from zero.
+    assert db.warnings(42) == [] and db.drop_last_warning(42) is None
+
+
 def test_uploads_expire(tmp_path, monkeypatch):
     """Who requested an upload is known for a week only."""
     db = Storage(tmp_path / "bot.db")

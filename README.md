@@ -10,7 +10,7 @@ Made by [@artemi372](https://t.me/artemi372) · try it: [@mediapastebot](https:/
 > Use at your own risk, and read the code before running it anywhere important.
 
 > [!NOTE]
-> **Instagram needs cookies** from a logged-in account, and YouTube may ask for them too — see [Cookies](#cookies-optional-for-instagram--youtube--facebook).
+> **Instagram needs cookies** from a logged-in account, and YouTube may ask for them too — see [Cookies](#cookies-optional-for-instagram--youtube).
 
 Type in any chat:
 
@@ -48,9 +48,8 @@ Settings and the recent videos survive a group turning into a supergroup (Telegr
 | TikTok | videos, photo slideshows (sent as albums) | ✅ stable |
 | YouTube | Shorts only (`youtube.com/shorts/...`) | ⚠️ works from home IPs; servers often get blocked |
 | Instagram | Reels, posts and carousels (photos + videos, sent as albums) | ⚠️ needs cookies from a logged-in account |
-| Facebook | Reels and videos, incl. share links (`fb.watch/...`, `facebook.com/share/r/...`) | ⚠️ new; share links may need cookies |
 
-**Not a video?** A link to a live stream or to an account (TikTok, YouTube, Instagram, Facebook) gets a reaction that says so — 🙈 live stream, 🤨 account — and in private chat a short explanation; nothing is downloaded. The same goes for a short link that turns out to lead to one. In groups it's only the reaction, so the chat stays clean.
+**Not a video?** A link to a live stream or to an account (TikTok, YouTube, Instagram) gets a reaction that says so — 🙈 live stream, 🤨 account — and in private chat a short explanation; nothing is downloaded. The same goes for a short link that turns out to lead to one. In groups it's only the reaction, so the chat stays clean.
 
 **Reactions:** 👀 working on it, 🤷 failed, 🙈 live stream, 🤨 account. Custom (Premium) emoji can replace them via `REACTION_*_ID` in `.env`, but Telegram lets a bot use a custom reaction only in groups whose admins added that emoji to the allowed reactions — never in private chats. Wherever it isn't allowed, the standard emoji is used automatically.
 
@@ -103,9 +102,10 @@ Group admins can turn these messages off for their group in `/settings`. Ctrl+C 
 **Moderation** (developers). Post these in the **storage channel**, where only you can post, or send them to the bot in private chat:
 
 - `/ban` as a reply to a stored video bans whoever requested it (known for 7 days), or `/ban <user id> [reason]`. A reason starting with `request` marks a ban the user asked for (e.g. under the privacy policy): their settings are deleted, and they can lift it themselves with `/appeal`.
-- `/unban <user id>`
+- `/unban <user id>` (also clears their warnings)
+- `/warn` as a reply to a stored video warns whoever requested it, or `/warn <user id>`. The bot offers the rules from the Terms of Use as buttons, the likely ones first with 💡 and why: a rule the user was already warned for, a lot of links in the last hour (spam), or a post that is already blocked (copyright). The bot can't see what's in the video, so it only suggests; you pick. `/warn <user id> <rule> [note]` (rules: `copyright`, `private`, `spam`, `comment`, `illegal`) skips the buttons, and `/warn <user id> <any text>` warns in your own words. The user gets each warning with the rule, in their language. **The 3rd warning is a ban**, and the ban message lists every rule from all the warnings. `/unwarn <user id>` takes back the latest one. For illegal content, `/ban` right away instead.
 - `/block` as a reply to a stored video (the one with the link caption), or `/block <link> [reason]`: the post is never downloaded again, its cached copy is forgotten and the stored one deleted. `/unblock <link>` allows it again.
-- `/bans` lists banned users and blocked posts.
+- `/bans` lists banned users, warned users and blocked posts.
 
 In the storage channel, the command and the answer delete themselves after a minute. Banned users get a message with the reason; their links are ignored silently in groups. With `/appeal <why>` they send the developers an appeal with Unban/Reject buttons, at most once a day.
 
@@ -117,15 +117,14 @@ In groups, the bot ignores links inside long texts (over 200 characters besides 
 
 Known chats, settings, the `file_id` cache, recent videos, bans and blocked posts are kept in `data/bot.db` (runtime data, out of git). An older `state.json` and `media_cache.json` are imported on the first start and renamed to `*.imported`.
 
-### Cookies (optional, for Instagram / YouTube / Facebook)
+### Cookies (optional, for Instagram / YouTube)
 
-If Instagram, YouTube or Facebook refuses downloads ("login required", "sign in to confirm you're not a bot"), export cookies from a browser where you're logged in (e.g. with the *Get cookies.txt LOCALLY* extension) and save them as:
+If Instagram or YouTube refuses downloads ("login required", "sign in to confirm you're not a bot"), export cookies from a browser where you're logged in (e.g. with the *Get cookies.txt LOCALLY* extension) and save them as:
 
 ```
 cookies/instagram.txt
 cookies/youtube.txt
 cookies/tiktok.txt
-cookies/facebook.txt
 ```
 
 The bot picks them up automatically. **Use a throwaway account**, not your main one: platforms may ban accounts used for automated downloads. That account should also **follow nobody**: anyone can send the bot a link, so everything the account can see — private profiles it follows included — becomes downloadable by every user. Cookies are as secret as a password, so the `cookies/` folder must be in `.gitignore`.
