@@ -77,6 +77,19 @@ def test_warnings(tmp_path):
     assert db.warnings(42) == [] and db.drop_last_warning(42) is None
 
 
+def test_warnings_expire(tmp_path, monkeypatch):
+    """Warnings go after 90 days, but not those that led to a ban."""
+    db = Storage(tmp_path / "bot.db")
+    db.add_warning(1, "spam")
+    db.add_warning(2, "spam")
+    db.ban(2, "warnings", "warnings")
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now + 91 * 24 * 60 * 60)
+    db.add_warning(1, "hate")
+    assert [w["rule"] for w in db.warnings(1)] == ["hate"]
+    assert len(db.warnings(2)) == 1
+
+
 def test_uploads_expire(tmp_path, monkeypatch):
     """Who requested an upload is known for a week only."""
     db = Storage(tmp_path / "bot.db")

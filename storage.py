@@ -13,6 +13,7 @@ from botkit's KitStore. The bot's own tables:
 5. uploads: who requested each stored video (for a week), so the
    author can ban whoever downloads forbidden content.
 6. warnings: rules a user broke (/warn); WARN_LIMIT of them is a ban.
+   They expire after WARN_MAX_AGE unless the user is banned.
 
 Before botkit this lived in state.json and media_cache.json; they are
 imported once and kept as *.imported.
@@ -37,6 +38,9 @@ RECENT_LIMIT = 50
 RECENT_MAX_AGE = 7 * 24 * 60 * 60
 # Who requested an upload is kept this long.
 UPLOADS_MAX_AGE = 7 * 24 * 60 * 60
+# A warning expires after this long, unless it led to a ban (the ban
+# message lists it; /unban clears it).
+WARN_MAX_AGE = 90 * 24 * 60 * 60
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS media (
@@ -236,8 +240,18 @@ class Storage(KitStore):
         self.db.commit()
         return True
 
+    def expire_warnings(self) -> None:
+        """Delete expired warnings (not those of banned users)."""
+        self.db.execute(
+            "DELETE FROM warnings WHERE at < ? "
+            "AND user_id NOT IN (SELECT user_id FROM bans)",
+            (int(time.time()) - WARN_MAX_AGE,),
+        )
+        self.db.commit()
+
     def warnings(self, user_id: int) -> list[dict]:
-        """Return a user's warnings, oldest first."""
+        """Return a user's current warnings, oldest first."""
+        self.expire_warnings()
         rows = self.db.execute(
             "SELECT * FROM warnings WHERE user_id=? ORDER BY id",
             (user_id,),
@@ -246,6 +260,7 @@ class Storage(KitStore):
 
     def drop_last_warning(self, user_id: int) -> dict | None:
         """Take back a user's latest warning and return it."""
+        self.expire_warnings()
         row = self.db.execute(
             "SELECT * FROM warnings WHERE user_id=? ORDER BY id DESC",
             (user_id,),
@@ -258,6 +273,7 @@ class Storage(KitStore):
 
     def warned(self, limit: int = 50) -> list[dict]:
         """Return users with warnings: user_id, count, last warning."""
+        self.expire_warnings()
         rows = self.db.execute(
             "SELECT user_id, COUNT(*) AS count, MAX(at) AS at "
             "FROM warnings GROUP BY user_id ORDER BY at DESC LIMIT ?",
